@@ -1,6 +1,14 @@
 # Rebrowse Workflow — FastAPI service
 
-basd on Workflow-use!
+- ENV: dev
+
+    ```
+    ENV=dev uvicorn backend.api:app --reload
+    ```
+- ENV: prod
+    ```
+    ENV=prod uvicorn backend.api:app --reload
+    ```
 
 This is the python package for Workflow Use. It is used to create and execute workflows.
 
