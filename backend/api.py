@@ -14,31 +14,23 @@ if sys.platform == 'win32':
 
 app = FastAPI(title='Rebrowse Service')
 
-# Add CORS middleware
+# ─── CORS ────────
 origins = [
-    "https://app.rebrowse.me",       # Vercel UI
-    "https://rebrowse.me",           # landing page if it ever calls API
-    "chrome-extension://*"    # extension pages - replace <EXT_ID> with actual extension ID
+    "https://app.rebrowse.me",         # production UI
+    "http://localhost:5173",           # local Vite dev
+    "chrome-extension://<EXT_ID>",     # Chrome extension
 ]
+origin_regex = r"https:\/\/.*\.vercel\.app"   # Vercel preview URLs
 
-# Allow any localhost address for development
-if os.environ.get('ENV') == 'dev':
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_origin_regex="https?://(localhost|127\\.0\\.0\\.1)(:\\d+)?",
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-else: # prod
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_origin_regex=origin_regex,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+#-----
 
 # Initialize service with app instance
 service = get_service(app=app)
