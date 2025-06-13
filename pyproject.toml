@@ -1,7 +1,7 @@
 [project]
-name = "workflow-use"
-version = "0.0.2"
-authors = [{ name = "Gregor Zunic" }]
+name = "rebrowse-backend"
+version = "0.0.1"
+authors = [{ name = "Nori Zkitty" }]
 description = "Create, edit, run deterministic workflows"
 readme = "README.md"
 requires-python = ">=3.11"
