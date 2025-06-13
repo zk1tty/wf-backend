@@ -16,8 +16,9 @@ app = FastAPI(title='Rebrowse Service')
 
 # Add CORS middleware
 origins = [
-    "http://localhost:5173",
-    "chrome-extension://*",
+    "https://app.rebrowse.me",       # Vercel UI
+    "https://rebrowse.me",           # landing page if it ever calls API
+    "chrome-extension://*"    # extension pages - replace <EXT_ID> with actual extension ID
 ]
 
 # Allow any localhost address for development
@@ -30,7 +31,7 @@ if os.environ.get('ENV') == 'dev':
         allow_methods=["*"],
         allow_headers=["*"],
     )
-else:
+else: # prod
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
