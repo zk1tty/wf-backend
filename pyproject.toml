@@ -3,14 +3,13 @@ name = "rebrowse-backend"
 version = "0.0.1"
 authors = [{ name = "Nori Zkitty" }]
 description = "Create, edit, run deterministic workflows"
-readme = "README.md"
 requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved",
     "Operating System :: OS Independent",
 ]
-
+readme = {text = "Rebrowse backend — FastAPI service", content-type = "text/plain"}
 dependencies = [
     "aiofiles>=24.1.0",
     "aiohttp>=3.12.2",
