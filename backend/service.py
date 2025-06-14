@@ -511,3 +511,26 @@ async def list_all_workflows(limit: int = 100):
 	               .order("created_at", desc=True) \
 	               .limit(limit)                 \
 	               .execute().data
+
+
+async def get_workflow_by_id(workflow_id: str):
+	"""Get single workflow by UUID with proper error handling."""
+	if not supabase:
+		raise Exception("Supabase client not configured")
+	
+	try:
+		result = supabase.from_("workflows") \
+		               .select("*") \
+		               .eq("id", workflow_id) \
+		               .execute()
+		
+		# Check if any data was returned
+		if not result.data or len(result.data) == 0:
+			return None
+			
+		return result.data[0]  # Return the first (and only) result
+		
+	except Exception as e:
+		# Log the error but don't expose internal details
+		print(f"Database error retrieving workflow {workflow_id}: {e}")
+		raise Exception("Failed to retrieve workflow")

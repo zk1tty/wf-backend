@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Depends
 
 from .dependencies import supabase, get_user, get_user_optional
-from .service import WorkflowService, list_all_workflows
+from .service import WorkflowService, list_all_workflows, get_workflow_by_id
 from .views import (
 	WorkflowAddRequest,
 	WorkflowBuildRequest,
@@ -209,40 +209,74 @@ async def workflows_public():
 	return await list_all_workflows()
 
 @db_wf_router.post("/", status_code=201)
-async def create_wf(body: dict, user=Depends(get_user)):
+async def create_wf(body: dict):
+	"""Create a new workflow without authentication (public endpoint)"""
 	if not supabase:
 		raise HTTPException(status_code=503, detail="Database not configured")
 		
-	title = body.get("title")
-	json_content  = body["json"]
-	row = supabase.table("workflows").insert({"owner": user, "title": title, "json": json_content}).execute().data[0]
+	workflow_data = body.get("json", {})
+	
+	# Extract workflow fields from the JSON payload
+	row = supabase.table("workflows").insert({
+		"owner_id": None,  # Public workflow (no owner)
+		"name": workflow_data.get("name", "Untitled Workflow"),
+		"version": workflow_data.get("version", "1.0"),
+		"description": workflow_data.get("description", ""),
+		"workflow_analysis": workflow_data.get("workflow_analysis", ""),
+		"steps": workflow_data.get("steps", []),
+		"input_schema": workflow_data.get("input_schema", [])
+	}).execute().data[0]
+	
 	return {"id": row["id"]}
 
-@db_wf_router.get("/{id:uuid}")
+@db_wf_router.get("/{id:uuid}", summary="Get workflow by UUID")
 async def read_wf(id: uuid.UUID, user=Depends(get_user_optional)):
-	if not supabase:
-		raise HTTPException(status_code=503, detail="Database not configured")
+	"""Get a single workflow by UUID. Returns 404 if not found."""
+	try:
+		# Use our new service function
+		workflow = await get_workflow_by_id(str(id))
 		
-	row = supabase.table("workflows").select("*").eq("id", str(id)).single().execute().data
-	editable = False
-	if row.get("owner_id"):
-		editable = (row["owner_id"] == user)
-	
-	# Return the workflow data in the expected format
-	workflow_data = {
-		"name": row.get("name"),
-		"version": row.get("version"),
-		"description": row.get("description"),
-		"steps": row.get("steps", []),
-		"input_schema": row.get("input_schema", []),
-		"workflow_analysis": row.get("workflow_analysis")
-	}
-	
-	return {
-		"json": workflow_data, 
-		"editable": editable, 
-		"title": row.get("name")  # Use name as title if no separate title field
-	}
+		if not workflow:
+			raise HTTPException(status_code=404, detail=f"Workflow with ID {id} not found")
+		
+		# Determine if user can edit this workflow
+		editable = False
+		if workflow.get("owner_id") and user:
+			editable = (workflow["owner_id"] == user)
+		
+		# Return standardized response format
+		return {
+			"id": workflow["id"],
+			"name": workflow.get("name"),
+			"version": workflow.get("version"),
+			"description": workflow.get("description"),
+			"steps": workflow.get("steps", []),
+			"input_schema": workflow.get("input_schema", []),
+			"workflow_analysis": workflow.get("workflow_analysis"),
+			"editable": editable,
+			"created_at": workflow.get("created_at"),
+			"updated_at": workflow.get("updated_at"),
+			# Legacy support: some clients expect "json" and "title" fields
+			"json": {
+				"name": workflow.get("name"),
+				"version": workflow.get("version"),
+				"description": workflow.get("description"),
+				"steps": workflow.get("steps", []),
+				"input_schema": workflow.get("input_schema", []),
+				"workflow_analysis": workflow.get("workflow_analysis")
+			},
+			"title": workflow.get("name")
+		}
+		
+	except HTTPException:
+		# Re-raise HTTP exceptions (like 404)
+		raise
+	except Exception as e:
+		# Handle service layer errors
+		if "Supabase client not configured" in str(e):
+			raise HTTPException(status_code=503, detail="Database service unavailable")
+		else:
+			raise HTTPException(status_code=500, detail="Internal server error")
 
 @db_wf_router.patch("/{id:uuid}")
 async def update_wf(id: uuid.UUID, body: dict, user=Depends(get_user)):
