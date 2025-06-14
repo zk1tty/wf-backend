@@ -96,3 +96,19 @@ class WorkflowBuildResponse(BaseModel):
 	success: bool
 	message: str
 	error: Optional[str] = None
+
+
+# New models for async processing
+class WorkflowUploadResponse(BaseModel):
+	success: bool
+	job_id: str
+	message: str
+	estimated_duration_seconds: int = 30
+
+class WorkflowJobStatus(BaseModel):
+	job_id: str
+	status: str  # "processing", "completed", "failed"
+	progress: int  # 0-100
+	workflow_id: Optional[str] = None  # UUID when completed
+	error: Optional[str] = None
+	estimated_remaining_seconds: Optional[int] = None
