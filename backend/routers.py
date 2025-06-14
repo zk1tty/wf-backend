@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Depends
 
 from .dependencies import supabase, get_user, get_user_optional
-from .service import WorkflowService
+from .service import WorkflowService, list_all_workflows
 from .views import (
 	WorkflowAddRequest,
 	WorkflowBuildRequest,
@@ -202,8 +202,17 @@ async def build_workflow(request: WorkflowBuildRequest):
 	return await service.build_workflow(request)
 
 
+# ─── wf from Supabase ────────
+@db_wf_router.get("/", summary="Public list")
+async def workflows_public():
+	"""Get all workflows from Supabase database (read-only, unauthenticated)"""
+	return await list_all_workflows()
+
 @db_wf_router.post("/", status_code=201)
 async def create_wf(body: dict, user=Depends(get_user)):
+	if not supabase:
+		raise HTTPException(status_code=503, detail="Database not configured")
+		
 	title = body.get("title")
 	json_content  = body["json"]
 	row = supabase.table("workflows").insert({"owner": user, "title": title, "json": json_content}).execute().data[0]
@@ -211,14 +220,35 @@ async def create_wf(body: dict, user=Depends(get_user)):
 
 @db_wf_router.get("/{id:uuid}")
 async def read_wf(id: uuid.UUID, user=Depends(get_user_optional)):
+	if not supabase:
+		raise HTTPException(status_code=503, detail="Database not configured")
+		
 	row = supabase.table("workflows").select("*").eq("id", str(id)).single().execute().data
 	editable = False
-	if row.get("owner"):
-		editable = (row["owner"] == user)
-	return {"json": row["json"], "editable": editable, "title": row["title"]}
+	if row.get("owner_id"):
+		editable = (row["owner_id"] == user)
+	
+	# Return the workflow data in the expected format
+	workflow_data = {
+		"name": row.get("name"),
+		"version": row.get("version"),
+		"description": row.get("description"),
+		"steps": row.get("steps", []),
+		"input_schema": row.get("input_schema", []),
+		"workflow_analysis": row.get("workflow_analysis")
+	}
+	
+	return {
+		"json": workflow_data, 
+		"editable": editable, 
+		"title": row.get("name")  # Use name as title if no separate title field
+	}
 
 @db_wf_router.patch("/{id:uuid}")
 async def update_wf(id: uuid.UUID, body: dict, user=Depends(get_user)):
+	if not supabase:
+		raise HTTPException(status_code=503, detail="Database not configured")
+		
 	row = supabase.table("workflows").select("owner").eq("id", str(id)).single().execute().data
 	if row["owner"] != user:
 		raise HTTPException(403)

@@ -14,6 +14,7 @@ from workflow_use.controller.service import WorkflowController
 from workflow_use.recorder.service import RecordingService
 from workflow_use.workflow.service import Workflow
 
+from .dependencies import supabase
 from .views import (
 	TaskInfo,
 	WorkflowAddRequest,
@@ -34,7 +35,7 @@ class WorkflowService:
 	"""Workflow execution service."""
 
 	def __init__(self, app=None) -> None:
-		# ---------- Core resources ----------
+		# ---------- Core resources to fetch from local storage ----------
 		self.tmp_dir: Path = Path('./tmp')
 		self.log_dir: Path = self.tmp_dir / 'logs'
 		self.log_dir.mkdir(exist_ok=True, parents=True)
@@ -497,3 +498,16 @@ class WorkflowService:
 		except Exception as e:
 			print(f'Error building workflow: {e}')
 			return WorkflowBuildResponse(success=False, message='Failed to build workflow', error=str(e))
+
+
+# ─── Supabase Service Helpers ────────
+async def list_all_workflows(limit: int = 100):
+	"""Fetch all workflows from Supabase database in read-only mode."""
+	if not supabase:
+		raise Exception("Supabase client not configured")
+		
+	return supabase.from_("workflows")           \
+	               .select("*")                  \
+	               .order("created_at", desc=True) \
+	               .limit(limit)                 \
+	               .execute().data
