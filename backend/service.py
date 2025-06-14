@@ -3,6 +3,7 @@ import json
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+import uuid
 
 import aiofiles
 from browser_use.agent.views import ActionResult
@@ -28,8 +29,11 @@ from .views import (
 	WorkflowResponse,
 	WorkflowStatusResponse,
 	WorkflowUpdateRequest,
+	WorkflowJobStatus,
 )
 
+# Add job tracking at module level
+workflow_jobs: Dict[str, WorkflowJobStatus] = {}
 
 class WorkflowService:
 	"""Workflow execution service."""
@@ -534,3 +538,124 @@ async def get_workflow_by_id(workflow_id: str):
 		# Log the error but don't expose internal details
 		print(f"Database error retrieving workflow {workflow_id}: {e}")
 		raise Exception("Failed to retrieve workflow")
+
+
+async def build_workflow_from_recording_data(recording_data: dict, user_goal: str, workflow_name: Optional[str] = None):
+	"""Build a workflow from recording JSON data using BuilderService."""
+	try:
+		# Initialize the builder service with the LLM instance
+		if not hasattr(build_workflow_from_recording_data, '_builder_service'):
+			from langchain_openai import ChatOpenAI
+			llm_instance = ChatOpenAI(model='gpt-4o-mini')
+			build_workflow_from_recording_data._builder_service = BuilderService(llm=llm_instance)
+		
+		builder_service = build_workflow_from_recording_data._builder_service
+		
+		# Validate and convert recording data to WorkflowDefinitionSchema
+		from workflow_use.schema.views import WorkflowDefinitionSchema
+		recording_schema = WorkflowDefinitionSchema.model_validate(recording_data)
+		
+		# Build the workflow using the builder service
+		built_workflow = await builder_service.build_workflow(
+			input_workflow=recording_schema,
+			user_goal=user_goal,
+			use_screenshots=False  # We don't need screenshots for API use
+		)
+		
+		# Set workflow name if provided
+		if workflow_name:
+			built_workflow.name = workflow_name
+			
+		# Set timestamps for steps that don't have them
+		import time
+		current_time = int(time.time() * 1000)  # Current time in milliseconds
+		has_timestamp = False
+		for step in built_workflow.steps:
+			if hasattr(step, 'type') and step.type != 'agent' and hasattr(step, 'timestamp') and step.timestamp is not None:
+				has_timestamp = True
+				break
+		if not has_timestamp:
+			for step in built_workflow.steps:
+				if hasattr(step, 'type') and step.type != 'agent' and hasattr(step, 'timestamp'):
+					step.timestamp = current_time
+		
+		return built_workflow
+		
+	except Exception as e:
+		print(f'Error building workflow from recording: {e}')
+		raise Exception(f"Failed to build workflow: {str(e)}")
+
+
+async def process_workflow_upload_async(job_id: str, recording_data: dict, user_goal: str, workflow_name: Optional[str] = None):
+	"""Process workflow upload in background and save to database."""
+	try:
+		# Update job status: Starting conversion
+		workflow_jobs[job_id].status = "processing"
+		workflow_jobs[job_id].progress = 10
+		workflow_jobs[job_id].estimated_remaining_seconds = 25
+		
+		# Step 1: Convert recording to workflow (this takes time)
+		built_workflow = await build_workflow_from_recording_data(
+			recording_data=recording_data,
+			user_goal=user_goal,
+			workflow_name=workflow_name
+		)
+		
+		# Update job status: Conversion complete, saving to DB
+		workflow_jobs[job_id].status = "processing"
+		workflow_jobs[job_id].progress = 80
+		workflow_jobs[job_id].estimated_remaining_seconds = 5
+		
+		# Step 2: Save to database
+		if not supabase:
+			raise Exception("Database not configured")
+			
+		row = supabase.table("workflows").insert({
+			"owner_id": None,  # Public workflow
+			"name": built_workflow.name,
+			"version": built_workflow.version,
+			"description": built_workflow.description,
+			"workflow_analysis": built_workflow.workflow_analysis,
+			"steps": [step.model_dump() for step in built_workflow.steps],
+			"input_schema": [item.model_dump() for item in built_workflow.input_schema]
+		}).execute().data[0]
+		
+		# Job completed successfully
+		workflow_jobs[job_id].status = "completed" 
+		workflow_jobs[job_id].progress = 100
+		workflow_jobs[job_id].workflow_id = row["id"]
+		workflow_jobs[job_id].estimated_remaining_seconds = 0
+		
+		return row["id"]
+		
+	except Exception as e:
+		# Job failed
+		workflow_jobs[job_id].status = "failed"
+		workflow_jobs[job_id].error = str(e)
+		workflow_jobs[job_id].estimated_remaining_seconds = 0
+		print(f"Workflow upload job {job_id} failed: {e}")
+		return None
+
+
+async def start_workflow_upload_job(recording_data: dict, user_goal: str, workflow_name: Optional[str] = None) -> str:
+	"""Start an async workflow upload job and return job ID."""
+	job_id = str(uuid.uuid4())
+	
+	# Initialize job status
+	workflow_jobs[job_id] = WorkflowJobStatus(
+		job_id=job_id,
+		status="processing",
+		progress=0,
+		estimated_remaining_seconds=30
+	)
+	
+	# Start background task (fire and forget)
+	import asyncio
+	asyncio.create_task(process_workflow_upload_async(job_id, recording_data, user_goal, workflow_name))
+	
+	return job_id
+
+
+def get_workflow_job_status(job_id: str) -> Optional[WorkflowJobStatus]:
+	"""Get the current status of a workflow upload job."""
+	return workflow_jobs.get(job_id)
