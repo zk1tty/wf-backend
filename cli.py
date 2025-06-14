@@ -450,7 +450,7 @@ def launch_gui():
 
 	backend = subprocess.Popen(['uvicorn', 'backend.api:app'], stdout=backend_log, stderr=subprocess.STDOUT)
 	typer.echo(typer.style('Starting frontend...', bold=True))
-	frontend = subprocess.Popen(['npm', 'run', 'dev'], cwd='../ui', stdout=frontend_log, stderr=subprocess.STDOUT)
+	frontend = subprocess.Popen(['npm', 'run', 'dev'], cwd='../wf-ui', stdout=frontend_log, stderr=subprocess.STDOUT)
 	typer.echo(typer.style('Opening browser...', bold=True))
 	webbrowser.open('http://localhost:5173')
 	try:
