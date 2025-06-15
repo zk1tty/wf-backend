@@ -91,40 +91,16 @@ class WorkflowService:
 			# Production configuration for Railway/cloud deployment
 			from browser_use.browser.browser import BrowserProfile
 			
-			# Try to find Chromium executable
-			chromium_paths = [
-				'/usr/bin/chromium-browser',
-				'/usr/bin/chromium',
-				'/usr/bin/google-chrome',
-				'/usr/bin/google-chrome-stable',
-				'/nix/store/*/bin/chromium',
-				os.getenv('BROWSER_EXECUTABLE_PATH'),
-				os.getenv('CHROMIUM_PATH')
-			]
+			print("[WorkflowService] Initializing browser in PRODUCTION mode (headless)")
+			print(f"[WorkflowService] Display: {os.getenv('DISPLAY', 'not set')}")
 			
-			chromium_executable = None
-			for path in chromium_paths:
-				if path and shutil.which(path):
-					chromium_executable = path
-					print(f"[WorkflowService] Found Chromium at: {chromium_executable}")
-					break
-				elif path and os.path.exists(path):
-					chromium_executable = path
-					print(f"[WorkflowService] Found Chromium at: {chromium_executable}")
-					break
-			
-			if not chromium_executable:
-				# Try using shutil.which for common names
-				for name in ['chromium-browser', 'chromium', 'google-chrome', 'google-chrome-stable']:
-					found = shutil.which(name)
-					if found:
-						chromium_executable = found
-						print(f"[WorkflowService] Found Chromium via which: {chromium_executable}")
-						break
-			
-			if not chromium_executable:
-				print("[WorkflowService] WARNING: Chromium executable not found, using default")
-				chromium_executable = 'chromium-browser'  # Fallback
+			# Check if Playwright browsers are installed
+			playwright_chromium_path = "/root/.cache/ms-playwright/chromium-1169/chrome-linux/chrome"
+			if os.path.exists(playwright_chromium_path):
+				print(f"[WorkflowService] Playwright Chromium found at: {playwright_chromium_path}")
+			else:
+				print(f"[WorkflowService] WARNING: Playwright Chromium not found at: {playwright_chromium_path}")
+				print("[WorkflowService] Make sure 'playwright install chromium' was run during build")
 			
 			profile = BrowserProfile(
 				headless=True,  # Run without GUI
@@ -154,9 +130,8 @@ class WorkflowService:
 				]
 			)
 			
-			print(f"[WorkflowService] Initializing browser in PRODUCTION mode (headless)")
-			print(f"[WorkflowService] Using Chromium: {chromium_executable}")
-			print(f"[WorkflowService] Display: {os.getenv('DISPLAY', 'not set')}")
+			# Let browser-use/Playwright handle the executable path automatically
+			# Don't override executable_path - let Playwright use its own Chromium
 			return Browser(browser_profile=profile)
 		else:
 			# Local development configuration

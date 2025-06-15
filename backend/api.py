@@ -63,6 +63,16 @@ async def health_check():
 		except Exception:
 			health_status["filesystem_writable"] = False
 		
+		# Check Playwright browser availability (production critical)
+		playwright_chromium_path = "/root/.cache/ms-playwright/chromium-1169/chrome-linux/chrome"
+		health_status["playwright_chromium_available"] = os.path.exists(playwright_chromium_path)
+		
+		# Check if we're in production and warn if Playwright browser is missing
+		is_production = os.getenv('RAILWAY_ENVIRONMENT') is not None
+		if is_production and not health_status["playwright_chromium_available"]:
+			health_status["status"] = "degraded"
+			health_status["warning"] = "Playwright Chromium not found - workflow execution may fail"
+		
 		return health_status
 		
 	except Exception as e:
@@ -83,7 +93,23 @@ async def test_browser():
 			"railway_env": os.getenv('RAILWAY_ENVIRONMENT', 'not set'),
 		}
 		
-		# Check for Chromium executable
+		# Check Playwright browser installation
+		playwright_info = {}
+		playwright_chromium_path = "/root/.cache/ms-playwright/chromium-1169/chrome-linux/chrome"
+		playwright_info["chromium_path"] = playwright_chromium_path
+		playwright_info["chromium_exists"] = os.path.exists(playwright_chromium_path)
+		
+		# List Playwright directory contents
+		playwright_dir = "/root/.cache/ms-playwright"
+		if os.path.exists(playwright_dir):
+			try:
+				playwright_info["directory_contents"] = os.listdir(playwright_dir)
+			except Exception as e:
+				playwright_info["directory_error"] = str(e)
+		else:
+			playwright_info["directory_exists"] = False
+		
+		# Check for system Chromium (fallback)
 		chromium_paths = [
 			'/usr/bin/chromium-browser',
 			'/usr/bin/chromium',
@@ -91,55 +117,49 @@ async def test_browser():
 			'/usr/bin/google-chrome-stable',
 		]
 		
-		chromium_info = {}
+		system_chromium_info = {}
 		for path in chromium_paths:
 			exists = os.path.exists(path) if path else False
 			executable = shutil.which(path) if path else None
-			chromium_info[path] = {
+			system_chromium_info[path] = {
 				"exists": exists,
 				"executable": executable is not None,
 				"path": executable
 			}
 		
-		# Try to create and test browser
+		# Try to create and test browser using the same logic as WorkflowService
 		browser_test = {"status": "unknown", "error": None}
 		
 		try:
-			# Find working Chromium
-			chromium_executable = None
-			for name in ['chromium-browser', 'chromium', 'google-chrome']:
-				found = shutil.which(name)
-				if found:
-					chromium_executable = found
-					break
+			# Use the same browser creation logic as WorkflowService
+			is_production = os.getenv('RAILWAY_ENVIRONMENT') is not None
 			
-			if not chromium_executable:
-				chromium_executable = 'chromium-browser'  # Fallback
-			
-			# Create test browser profile
-			profile = BrowserProfile(
-				headless=True,
-				disable_security=True,
-				args=[
-					'--no-sandbox',
-					'--disable-dev-shm-usage',
-					'--disable-gpu',
-					'--single-process',
-					'--disable-web-security',
-					'--no-first-run',
-					'--disable-extensions'
-				]
-			)
-			
-			# Test browser creation
-			test_browser = Browser(browser_profile=profile)
+			if is_production:
+				# Production configuration - let Playwright handle the executable
+				profile = BrowserProfile(
+					headless=True,
+					disable_security=True,
+					args=[
+						'--no-sandbox',
+						'--disable-dev-shm-usage',
+						'--disable-gpu',
+						'--disable-web-security',
+						'--single-process',
+						'--no-first-run',
+						'--disable-extensions'
+					]
+				)
+				test_browser = Browser(browser_profile=profile)
+			else:
+				# Development configuration
+				test_browser = Browser()
 			
 			# Try to start browser
 			await test_browser.start()
 			
 			# Try to navigate to a simple page
 			page = await test_browser.get_current_page()
-			await page.goto("data:text/html,<html><body><h1>Browser Test</h1></body></html>")
+			await page.goto("data:text/html,<html><body><h1>Browser Test Success</h1></body></html>")
 			
 			# Get page title
 			title = await page.title()
@@ -149,21 +169,22 @@ async def test_browser():
 			
 			browser_test = {
 				"status": "success",
-				"chromium_path": chromium_executable,
 				"page_title": title,
-				"message": "Browser test completed successfully"
+				"message": "Browser test completed successfully",
+				"configuration": "production" if is_production else "development"
 			}
 			
 		except Exception as e:
 			browser_test = {
 				"status": "failed",
 				"error": str(e),
-				"message": "Browser test failed"
+				"message": "Browser test failed - check Playwright installation"
 			}
 		
 		return {
 			"environment": env_info,
-			"chromium_detection": chromium_info,
+			"playwright_browser": playwright_info,
+			"system_chromium": system_chromium_info,
 			"browser_test": browser_test,
 			"timestamp": os.popen('date').read().strip()
 		}
