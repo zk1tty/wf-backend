@@ -4,6 +4,21 @@ This directory contains all test scripts for the wf-backend project. All tests h
 
 ## Available Tests
 
+### 🎭 Playwright Setup Test
+**File:** `test_playwright_setup.py`
+**Purpose:** Verify Playwright installation and browser functionality
+**Usage:**
+```bash
+cd test
+python test_playwright_setup.py
+```
+**Features Tested:**
+- Playwright package installation
+- browser-use import functionality
+- Playwright browser installation (Chromium)
+- Browser instance creation
+- Basic browser functionality (navigation, page interaction)
+
 ### 🎮 Custom Screensaver Test
 **File:** `test_custom_screensaver.py`
 **Purpose:** Test the rebrowse custom DVD screensaver functionality
@@ -86,6 +101,16 @@ python <test_file_name>.py
 python test/<test_file_name>.py
 ```
 
+## Recommended Test Order
+
+For troubleshooting deployment issues, run tests in this order:
+
+1. **Playwright Setup** - `test_playwright_setup.py` - Verify core browser functionality
+2. **Browser Local** - `test_browser_local.py` - Comprehensive browser testing
+3. **Custom Screensaver** - `test_custom_screensaver.py` - Test rebrowse features
+4. **Session Execution** - `test_session_execution.py` - Test API endpoints
+5. **JWT Tests** - `test-jwt-local.py` / `test-fresh-token.py` - Test authentication
+
 ## Path Handling
 
 All test files use robust path handling with:
@@ -99,9 +124,22 @@ This ensures tests work correctly regardless of where they're run from.
 
 - Python 3.11+
 - All project dependencies installed (`pip install -r requirements.txt`)
+- **Playwright browsers**: `playwright install chromium` (critical for production)
 - For browser tests: Chromium/Chrome installed
 - For API tests: Backend server running on localhost:8000
 - For JWT tests: Valid `.env` file with `SUPABASE_JWT_SECRET`
+
+## Production Deployment Issues
+
+If you encounter browser-related errors in production:
+
+1. **Run Playwright Setup Test** first to verify browser installation
+2. **Check deployment logs** for Playwright installation messages
+3. **Verify health endpoints**: `/health` and `/test-browser`
+4. **Common fixes**:
+   - Ensure `playwright install chromium` runs during build
+   - Check Dockerfile/nixpacks.toml includes Playwright setup
+   - Verify virtual display (Xvfb) is running in production
 
 ## Test Results
 
