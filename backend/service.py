@@ -64,6 +64,7 @@ class WorkflowService:
 	def _create_browser_instance(self) -> Browser:
 		"""Create browser instance with appropriate configuration for environment."""
 		import os
+		import shutil
 		
 		# Check if we're in production (Railway sets RAILWAY_ENVIRONMENT)
 		is_production = os.getenv('RAILWAY_ENVIRONMENT') is not None or os.getenv('RENDER') is not None
@@ -71,6 +72,41 @@ class WorkflowService:
 		if is_production:
 			# Production configuration for Railway/cloud deployment
 			from browser_use.browser.browser import BrowserProfile
+			
+			# Try to find Chromium executable
+			chromium_paths = [
+				'/usr/bin/chromium-browser',
+				'/usr/bin/chromium',
+				'/usr/bin/google-chrome',
+				'/usr/bin/google-chrome-stable',
+				'/nix/store/*/bin/chromium',
+				os.getenv('BROWSER_EXECUTABLE_PATH'),
+				os.getenv('CHROMIUM_PATH')
+			]
+			
+			chromium_executable = None
+			for path in chromium_paths:
+				if path and shutil.which(path):
+					chromium_executable = path
+					print(f"[WorkflowService] Found Chromium at: {chromium_executable}")
+					break
+				elif path and os.path.exists(path):
+					chromium_executable = path
+					print(f"[WorkflowService] Found Chromium at: {chromium_executable}")
+					break
+			
+			if not chromium_executable:
+				# Try using shutil.which for common names
+				for name in ['chromium-browser', 'chromium', 'google-chrome', 'google-chrome-stable']:
+					found = shutil.which(name)
+					if found:
+						chromium_executable = found
+						print(f"[WorkflowService] Found Chromium via which: {chromium_executable}")
+						break
+			
+			if not chromium_executable:
+				print("[WorkflowService] WARNING: Chromium executable not found, using default")
+				chromium_executable = 'chromium-browser'  # Fallback
 			
 			profile = BrowserProfile(
 				headless=True,  # Run without GUI
@@ -86,11 +122,23 @@ class WorkflowService:
 					'--disable-renderer-backgrounding',
 					'--disable-field-trial-config',
 					'--disable-ipc-flooding-protection',
+					'--disable-extensions',  # Disable extensions
+					'--disable-plugins',  # Disable plugins
+					'--disable-default-apps',  # Disable default apps
+					'--disable-sync',  # Disable sync
+					'--no-first-run',  # Skip first run setup
+					'--no-default-browser-check',  # Skip default browser check
+					'--disable-background-networking',  # Disable background networking
 					'--single-process',  # Use single process (saves memory)
+					'--memory-pressure-off',  # Disable memory pressure
+					'--max_old_space_size=4096',  # Increase memory limit
+					'--remote-debugging-port=9222',  # Enable remote debugging
 				]
 			)
 			
-			print("[WorkflowService] Initializing browser in PRODUCTION mode (headless)")
+			print(f"[WorkflowService] Initializing browser in PRODUCTION mode (headless)")
+			print(f"[WorkflowService] Using Chromium: {chromium_executable}")
+			print(f"[WorkflowService] Display: {os.getenv('DISPLAY', 'not set')}")
 			return Browser(browser_profile=profile)
 		else:
 			# Local development configuration
