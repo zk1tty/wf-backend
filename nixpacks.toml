@@ -12,12 +12,8 @@ cmds = [
 [phases.build]
 cmds = [
   "echo 'Build phase complete'",
-  "echo 'System chromium:' $(which chromium || echo 'not found')",
-  "echo 'Playwright chromium:' $(find /root/.cache/ms-playwright -name 'chrome*' -type f 2>/dev/null | head -5 || echo 'not found')",
-  "echo 'Playwright directory:' $(ls -la /root/.cache/ms-playwright/ 2>/dev/null || echo 'directory not found')",
   "echo 'Display setup: DISPLAY=$DISPLAY'",
-  "python -c \"import playwright; print('Playwright version:', playwright.__version__)\" || echo 'Playwright import failed'",
-  "python -c \"from browser_use import Browser; print('browser-use import successful')\" || echo 'browser-use import failed'"
+  "echo 'Playwright installation completed'"
 ]
 
 [start]

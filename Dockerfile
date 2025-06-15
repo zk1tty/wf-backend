@@ -51,22 +51,18 @@ RUN pip install playwright>=1.40.0
 RUN playwright install chromium
 RUN playwright install-deps chromium
 
-# Verify Playwright installation
-RUN echo "=== Playwright Installation Verification ===" && \
-    python -c "import playwright; print('Playwright version:', playwright.__version__)" && \
-    python -c "from browser_use import Browser; print('browser-use import successful')" && \
-    find /root/.cache/ms-playwright -name 'chrome*' -type f | head -5 && \
-    ls -la /root/.cache/ms-playwright/ && \
-    echo "=== Verification Complete ==="
-
 # Copy application code
 COPY . .
 
 # Create tmp directory for workflows
 RUN mkdir -p tmp/logs
 
+# Make verification script executable
+RUN chmod +x verify_playwright.py
+
 # Expose port (Railway will set PORT env var)
 EXPOSE $PORT
 
 # Start command with virtual display and dynamic port
-CMD xvfb-run -a -s '-screen 0 1920x1080x24' python -m uvicorn backend.api:app --host 0.0.0.0 --port ${PORT:-8000} 
+# Optionally run verification before starting the server
+CMD python verify_playwright.py && xvfb-run -a -s '-screen 0 1920x1080x24' python -m uvicorn backend.api:app --host 0.0.0.0 --port ${PORT:-8000} 
