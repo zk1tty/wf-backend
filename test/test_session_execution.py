@@ -5,6 +5,13 @@ Test script for session-based workflow execution
 import asyncio
 import json
 import requests
+import sys
+from pathlib import Path
+
+# Add the project root to Python path for robust imports
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 from backend.dependencies import validate_session_token
 
 # Test session token (replace with a valid one)

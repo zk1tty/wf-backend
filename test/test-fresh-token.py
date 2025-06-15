@@ -6,12 +6,16 @@ import os
 import jwt
 import requests
 import time
-from dotenv import load_dotenv
+import sys
 from pathlib import Path
+from dotenv import load_dotenv
 
-# Load .env file
-root_dir = Path(__file__).parent
-env_path = root_dir / '.env'
+# Add the project root to Python path for robust imports
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+# Load .env file from project root
+env_path = project_root / '.env'
 load_dotenv(dotenv_path=env_path)
 
 JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
