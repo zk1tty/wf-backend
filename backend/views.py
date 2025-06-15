@@ -112,3 +112,40 @@ class WorkflowJobStatus(BaseModel):
 	workflow_id: Optional[str] = None  # UUID when completed
 	error: Optional[str] = None
 	estimated_remaining_seconds: Optional[int] = None
+
+class UploadRequest(BaseModel):
+	recording: dict
+	goal: str
+	name: Optional[str] = None
+
+class OwnershipResponse(BaseModel):
+	is_owner: bool
+	owner_id: Optional[str]
+	is_legacy: bool
+
+class SessionUploadRequest(BaseModel):
+	recording: dict
+	goal: str
+	name: Optional[str] = None
+	session_token: str  # Supabase session access token
+
+# Session-based request models for database operations
+class SessionWorkflowUpdateRequest(BaseModel):
+	workflow_data: dict  # The workflow JSON data to update
+	session_token: str
+
+class SessionWorkflowMetadataUpdateRequest(BaseModel):
+	name: Optional[str] = None
+	description: Optional[str] = None
+	workflow_analysis: Optional[str] = None
+	version: Optional[str] = None
+	input_schema: Optional[List[dict]] = None
+	session_token: str
+
+class SessionWorkflowDeleteStepRequest(BaseModel):
+	step_index: int  # Index of the step to delete
+	session_token: str
+
+class SessionWorkflowExecuteRequest(BaseModel):
+	inputs: Dict[str, Any]  # Input parameters for workflow execution
+	session_token: str

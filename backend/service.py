@@ -586,7 +586,7 @@ async def build_workflow_from_recording_data(recording_data: dict, user_goal: st
 		raise Exception(f"Failed to build workflow: {str(e)}")
 
 
-async def process_workflow_upload_async(job_id: str, recording_data: dict, user_goal: str, workflow_name: Optional[str] = None):
+async def process_workflow_upload_async(job_id: str, recording_data: dict, user_goal: str, workflow_name: Optional[str] = None, owner_id: Optional[str] = None):
 	"""Process workflow upload in background and save to database."""
 	try:
 		# Update job status: Starting conversion
@@ -609,15 +609,20 @@ async def process_workflow_upload_async(job_id: str, recording_data: dict, user_
 		# Step 2: Save to database
 		if not supabase:
 			raise Exception("Database not configured")
-			
+		
+		from datetime import datetime
+		now = datetime.utcnow().isoformat()
+		
 		row = supabase.table("workflows").insert({
-			"owner_id": None,  # Public workflow
+			"owner_id": owner_id,  # Set owner_id from JWT
 			"name": built_workflow.name,
 			"version": built_workflow.version,
 			"description": built_workflow.description,
 			"workflow_analysis": built_workflow.workflow_analysis,
 			"steps": [step.model_dump() for step in built_workflow.steps],
-			"input_schema": [item.model_dump() for item in built_workflow.input_schema]
+			"input_schema": [item.model_dump() for item in built_workflow.input_schema],
+			"created_at": now,
+			"updated_at": now
 		}).execute().data[0]
 		
 		# Job completed successfully
@@ -637,7 +642,7 @@ async def process_workflow_upload_async(job_id: str, recording_data: dict, user_
 		return None
 
 
-async def start_workflow_upload_job(recording_data: dict, user_goal: str, workflow_name: Optional[str] = None) -> str:
+async def start_workflow_upload_job(recording_data: dict, user_goal: str, workflow_name: Optional[str] = None, owner_id: Optional[str] = None) -> str:
 	"""Start an async workflow upload job and return job ID."""
 	job_id = str(uuid.uuid4())
 	
@@ -651,7 +656,7 @@ async def start_workflow_upload_job(recording_data: dict, user_goal: str, workfl
 	
 	# Start background task (fire and forget)
 	import asyncio
-	asyncio.create_task(process_workflow_upload_async(job_id, recording_data, user_goal, workflow_name))
+	asyncio.create_task(process_workflow_upload_async(job_id, recording_data, user_goal, workflow_name, owner_id))
 	
 	return job_id
 
