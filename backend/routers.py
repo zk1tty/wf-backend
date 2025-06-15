@@ -3,26 +3,18 @@ import json
 import uuid
 
 from fastapi import APIRouter, HTTPException, Depends
+from typing import Optional
 
-from .dependencies import supabase, get_user, get_user_optional
+from .dependencies import supabase, get_user, get_user_optional, get_current_user, validate_session_token
 from .service import WorkflowService, list_all_workflows, get_workflow_by_id, build_workflow_from_recording_data, start_workflow_upload_job, get_workflow_job_status
 from .views import (
-	WorkflowAddRequest,
-	WorkflowBuildRequest,
-	WorkflowBuildResponse,
-	WorkflowCancelResponse,
-	WorkflowDeleteStepRequest,
-	WorkflowExecuteRequest,
-	WorkflowExecuteResponse,
-	WorkflowListResponse,
-	WorkflowLogsResponse,
-	WorkflowMetadataUpdateRequest,
-	WorkflowRecordResponse,
-	WorkflowResponse,
-	WorkflowStatusResponse,
-	WorkflowUpdateRequest,
-	WorkflowUploadResponse,
-	WorkflowJobStatus,
+	TaskInfo, WorkflowUpdateRequest, WorkflowMetadataUpdateRequest, WorkflowExecuteRequest,
+	WorkflowDeleteStepRequest, WorkflowAddRequest, WorkflowBuildRequest, WorkflowResponse,
+	WorkflowListResponse, WorkflowExecuteResponse, WorkflowLogsResponse, WorkflowRecordResponse,
+	WorkflowStatusResponse, WorkflowCancelResponse, WorkflowBuildResponse, WorkflowUploadResponse,
+	WorkflowJobStatus, UploadRequest, OwnershipResponse, SessionUploadRequest,
+	SessionWorkflowUpdateRequest, SessionWorkflowMetadataUpdateRequest,
+	SessionWorkflowDeleteStepRequest, SessionWorkflowExecuteRequest
 )
 
 # This router is for the original, file-based workflow operations
@@ -247,12 +239,46 @@ async def build_from_recording_api(body: dict):
 		raise HTTPException(status_code=500, detail=f"Failed to build workflow: {str(e)}")
 
 @db_wf_router.post("/", status_code=201)
-async def create_wf(body: dict):
-	"""Create a new workflow without authentication (public endpoint)"""
+async def create_wf(body: dict, session_token: str):
+	"""Create a new workflow with session authentication"""
+	if not supabase:
+		raise HTTPException(status_code=503, detail="Database not configured")
+	
+	# Validate session token
+	user_id = await validate_session_token(session_token)
+	if not user_id:
+		raise HTTPException(status_code=401, detail="Invalid or expired session token")
+		
+	workflow_data = body.get("json", {})
+	
+	from datetime import datetime
+	now = datetime.utcnow().isoformat()
+	
+	# Extract workflow fields from the JSON payload
+	row = supabase.table("workflows").insert({
+		"owner_id": user_id,  # Set owner from session
+		"name": workflow_data.get("name", "Untitled Workflow"),
+		"version": workflow_data.get("version", "1.0"),
+		"description": workflow_data.get("description", ""),
+		"workflow_analysis": workflow_data.get("workflow_analysis", ""),
+		"steps": workflow_data.get("steps", []),
+		"input_schema": workflow_data.get("input_schema", []),
+		"created_at": now,
+		"updated_at": now
+	}).execute().data[0]
+	
+	return {"id": row["id"]}
+
+@db_wf_router.post("/public", status_code=201, summary="Create workflow (public/testing)")
+async def create_wf_public(body: dict):
+	"""Create a new workflow without authentication (for testing/backwards compatibility)"""
 	if not supabase:
 		raise HTTPException(status_code=503, detail="Database not configured")
 		
 	workflow_data = body.get("json", {})
+	
+	from datetime import datetime
+	now = datetime.utcnow().isoformat()
 	
 	# Extract workflow fields from the JSON payload
 	row = supabase.table("workflows").insert({
@@ -262,10 +288,39 @@ async def create_wf(body: dict):
 		"description": workflow_data.get("description", ""),
 		"workflow_analysis": workflow_data.get("workflow_analysis", ""),
 		"steps": workflow_data.get("steps", []),
-		"input_schema": workflow_data.get("input_schema", [])
+		"input_schema": workflow_data.get("input_schema", []),
+		"created_at": now,
+		"updated_at": now
 	}).execute().data[0]
 	
 	return {"id": row["id"]}
+
+@db_wf_router.post("/test-owned", status_code=201, summary="Create owned workflow (testing)")
+async def create_wf_test_owned(body: dict):
+	"""Create a new workflow with test ownership (for testing)"""
+	if not supabase:
+		raise HTTPException(status_code=503, detail="Database not configured")
+		
+	workflow_data = body.get("json", {})
+	test_user_id = "b93d8ca3-5a1c-46d3-9571-36ad44d09d6d"  # Your actual user ID
+	
+	from datetime import datetime
+	now = datetime.utcnow().isoformat()
+	
+	# Extract workflow fields from the JSON payload
+	row = supabase.table("workflows").insert({
+		"owner_id": test_user_id,  # Set to test user
+		"name": workflow_data.get("name", "Untitled Workflow"),
+		"version": workflow_data.get("version", "1.0"),
+		"description": workflow_data.get("description", ""),
+		"workflow_analysis": workflow_data.get("workflow_analysis", ""),
+		"steps": workflow_data.get("steps", []),
+		"input_schema": workflow_data.get("input_schema", []),
+		"created_at": now,
+		"updated_at": now
+	}).execute().data[0]
+	
+	return {"id": row["id"], "owner_id": test_user_id}
 
 @db_wf_router.get("/{id:uuid}", summary="Get workflow by UUID")
 async def read_wf(id: uuid.UUID, user=Depends(get_user_optional)):
@@ -327,26 +382,166 @@ async def update_wf(id: uuid.UUID, body: dict, user=Depends(get_user)):
 	supabase.table("workflows").update({"json": body["json"], "title": body.get("title")}).eq("id", str(id)).execute()
 	return {"status": "ok"}
 
+@db_wf_router.patch("/{id:uuid}/session", summary="Update workflow with session token")
+async def update_wf_session(id: uuid.UUID, request: SessionWorkflowUpdateRequest):
+	"""Update workflow using session-based authentication"""
+	try:
+		if not supabase:
+			raise HTTPException(status_code=503, detail="Database not configured")
+		
+		# Validate session token
+		user_id = await validate_session_token(request.session_token)
+		if not user_id:
+			raise HTTPException(status_code=401, detail="Invalid or expired session token")
+		
+		# Check ownership
+		workflow = await get_workflow_by_id(str(id))
+		if not workflow:
+			raise HTTPException(status_code=404, detail="Workflow not found")
+		
+		workflow_owner_id = workflow.get("owner_id")
+		if workflow_owner_id != user_id:
+			raise HTTPException(status_code=403, detail="You don't own this workflow")
+		
+		# Update workflow data
+		from datetime import datetime
+		now = datetime.utcnow().isoformat()
+		
+		update_data = {
+			"name": request.workflow_data.get("name", workflow.get("name")),
+			"version": request.workflow_data.get("version", workflow.get("version")),
+			"description": request.workflow_data.get("description", workflow.get("description")),
+			"workflow_analysis": request.workflow_data.get("workflow_analysis", workflow.get("workflow_analysis")),
+			"steps": request.workflow_data.get("steps", workflow.get("steps", [])),
+			"input_schema": request.workflow_data.get("input_schema", workflow.get("input_schema", [])),
+			"updated_at": now
+		}
+		
+		supabase.table("workflows").update(update_data).eq("id", str(id)).execute()
+		
+		return {"success": True, "message": "Workflow updated successfully"}
+		
+	except HTTPException:
+		raise
+	except Exception as e:
+		raise HTTPException(status_code=500, detail=f"Failed to update workflow: {str(e)}")
+
+@db_wf_router.patch("/{id:uuid}/metadata/session", summary="Update workflow metadata with session token")
+async def update_wf_metadata_session(id: uuid.UUID, request: SessionWorkflowMetadataUpdateRequest):
+	"""Update workflow metadata using session-based authentication"""
+	try:
+		if not supabase:
+			raise HTTPException(status_code=503, detail="Database not configured")
+		
+		# Validate session token
+		user_id = await validate_session_token(request.session_token)
+		if not user_id:
+			raise HTTPException(status_code=401, detail="Invalid or expired session token")
+		
+		# Check ownership
+		workflow = await get_workflow_by_id(str(id))
+		if not workflow:
+			raise HTTPException(status_code=404, detail="Workflow not found")
+		
+		workflow_owner_id = workflow.get("owner_id")
+		if workflow_owner_id != user_id:
+			raise HTTPException(status_code=403, detail="You don't own this workflow")
+		
+		# Build update data from provided fields
+		from datetime import datetime
+		now = datetime.utcnow().isoformat()
+		
+		update_data = {"updated_at": now}
+		
+		if request.name is not None:
+			update_data["name"] = request.name
+		if request.description is not None:
+			update_data["description"] = request.description
+		if request.workflow_analysis is not None:
+			update_data["workflow_analysis"] = request.workflow_analysis
+		if request.version is not None:
+			update_data["version"] = request.version
+		if request.input_schema is not None:
+			update_data["input_schema"] = request.input_schema
+		
+		supabase.table("workflows").update(update_data).eq("id", str(id)).execute()
+		
+		return {"success": True, "message": "Workflow metadata updated successfully"}
+		
+	except HTTPException:
+		raise
+	except Exception as e:
+		raise HTTPException(status_code=500, detail=f"Failed to update workflow metadata: {str(e)}")
+
 @db_wf_router.post("/upload", summary="Upload and process recording (async)")
-async def upload_recording_async(body: dict):
+async def upload_recording_async(
+	request: UploadRequest, 
+	user_id: str = Depends(get_current_user)
+):
 	"""Upload recording, convert to workflow, and save to database - all in one async operation"""
 	try:
-		# Extract required fields from request body
-		recording_data = body.get("recording")
-		user_goal = body.get("goal", "")
-		workflow_name = body.get("name")
-		
-		if not recording_data:
-			raise HTTPException(status_code=400, detail="Missing 'recording' field in request body")
-		
-		if not user_goal:
-			raise HTTPException(status_code=400, detail="Missing 'goal' field in request body")
-		
-		# Start async processing job
+		# Start async processing job with owner_id
 		job_id = await start_workflow_upload_job(
-			recording_data=recording_data,
-			user_goal=user_goal,
-			workflow_name=workflow_name
+			recording_data=request.recording,
+			user_goal=request.goal,
+			workflow_name=request.name,
+			owner_id=user_id
+		)
+		
+		return WorkflowUploadResponse(
+			success=True,
+			job_id=job_id,
+			message="Workflow upload started. Use the job_id to check progress.",
+			estimated_duration_seconds=30
+		)
+		
+	except HTTPException:
+		raise
+	except Exception as e:
+		raise HTTPException(status_code=500, detail=f"Failed to start workflow upload: {str(e)}")
+
+@db_wf_router.post("/upload/public", summary="Upload and process recording (public/testing)")
+async def upload_recording_public(request: UploadRequest):
+	"""Upload recording (public endpoint for testing/backwards compatibility)"""
+	try:
+		# Start async processing job without owner_id (public workflow)
+		job_id = await start_workflow_upload_job(
+			recording_data=request.recording,
+			user_goal=request.goal,
+			workflow_name=request.name,
+			owner_id=None  # Public workflow
+		)
+		
+		return WorkflowUploadResponse(
+			success=True,
+			job_id=job_id,
+			message="Workflow upload started. Use the job_id to check progress.",
+			estimated_duration_seconds=30
+		)
+		
+	except HTTPException:
+		raise
+	except Exception as e:
+		raise HTTPException(status_code=500, detail=f"Failed to start workflow upload: {str(e)}")
+
+@db_wf_router.post("/upload/session", summary="Upload with session token (Chrome extension)")
+async def upload_recording_session(request: SessionUploadRequest):
+	"""Upload recording using Supabase session token (bypasses JWT verification issues)"""
+	try:
+		if not supabase:
+			raise HTTPException(status_code=503, detail="Database not configured")
+		
+		# Validate session token using our updated validation method
+		user_id = await validate_session_token(request.session_token)
+		if not user_id:
+			raise HTTPException(status_code=401, detail="Invalid or expired session token")
+		
+		# Start async processing job with authenticated user_id
+		job_id = await start_workflow_upload_job(
+			recording_data=request.recording,
+			user_goal=request.goal,
+			workflow_name=request.name,
+			owner_id=user_id
 		)
 		
 		return WorkflowUploadResponse(
@@ -370,3 +565,160 @@ async def get_upload_job_status(job_id: str):
 		raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 	
 	return job_status
+
+@db_wf_router.get("/{workflow_id}/ownership", summary="Check workflow ownership")
+async def check_ownership(
+	workflow_id: str,
+	session_token: Optional[str] = None
+):
+	"""Check if the current user owns the specified workflow (session-based auth)"""
+	try:
+		# Validate session token
+		if not session_token:
+			raise HTTPException(status_code=401, detail="session_token parameter required")
+		
+		user_id = await validate_session_token(session_token)
+		if not user_id:
+			raise HTTPException(status_code=401, detail="Invalid or expired session token")
+		
+		workflow = await get_workflow_by_id(workflow_id)
+		
+		if not workflow:
+			raise HTTPException(status_code=404, detail="Workflow not found")
+		
+		workflow_owner_id = workflow.get("owner_id")
+		is_owner = workflow_owner_id == user_id if workflow_owner_id else False
+		is_legacy = workflow_owner_id is None
+		
+		return OwnershipResponse(
+			is_owner=is_owner,
+			owner_id=workflow_owner_id,
+			is_legacy=is_legacy
+		)
+		
+	except HTTPException:
+		raise
+	except Exception as e:
+		raise HTTPException(status_code=500, detail=f"Failed to check ownership: {str(e)}")
+
+@db_wf_router.get("/{workflow_id}/ownership/test", summary="Test ownership endpoint (no auth)")
+async def check_ownership_test(workflow_id: str):
+	"""Test ownership endpoint without requiring authentication"""
+	try:
+		workflow = await get_workflow_by_id(workflow_id)
+		
+		if not workflow:
+			raise HTTPException(status_code=404, detail="Workflow not found")
+		
+		workflow_owner_id = workflow.get("owner_id")
+		test_user_id = "b93d8ca3-5a1c-46d3-9571-36ad44d09d6d"  # Your actual user ID
+		is_owner = workflow_owner_id == test_user_id if workflow_owner_id else False
+		is_legacy = workflow_owner_id is None
+		
+		return {
+			"is_owner": is_owner,
+			"owner_id": workflow_owner_id,
+			"is_legacy": is_legacy,
+			"test_user_id": test_user_id,
+			"message": "Test endpoint - no auth required"
+		}
+		
+	except HTTPException:
+		raise
+	except Exception as e:
+		raise HTTPException(status_code=500, detail=f"Failed to check ownership: {str(e)}")
+
+@db_wf_router.delete("/{id:uuid}/steps/{step_index}/session", summary="Delete workflow step with session token")
+async def delete_workflow_step_session(id: uuid.UUID, step_index: int, request: SessionWorkflowDeleteStepRequest):
+	"""Delete a specific step from workflow using session-based authentication"""
+	try:
+		if not supabase:
+			raise HTTPException(status_code=503, detail="Database not configured")
+		
+		# Validate session token
+		user_id = await validate_session_token(request.session_token)
+		if not user_id:
+			raise HTTPException(status_code=401, detail="Invalid or expired session token")
+		
+		# Check ownership
+		workflow = await get_workflow_by_id(str(id))
+		if not workflow:
+			raise HTTPException(status_code=404, detail="Workflow not found")
+		
+		workflow_owner_id = workflow.get("owner_id")
+		if workflow_owner_id != user_id:
+			raise HTTPException(status_code=403, detail="You don't own this workflow")
+		
+		# Get current steps
+		current_steps = workflow.get("steps", [])
+		
+		# Validate step index
+		if step_index < 0 or step_index >= len(current_steps):
+			raise HTTPException(status_code=400, detail=f"Invalid step index: {step_index}")
+		
+		# Remove the step
+		updated_steps = current_steps.copy()
+		updated_steps.pop(step_index)
+		
+		# Update workflow with new steps
+		from datetime import datetime
+		now = datetime.utcnow().isoformat()
+		
+		update_data = {
+			"steps": updated_steps,
+			"updated_at": now
+		}
+		
+		supabase.table("workflows").update(update_data).eq("id", str(id)).execute()
+		
+		return {"success": True, "message": f"Step {step_index} deleted successfully"}
+		
+	except HTTPException:
+		raise
+	except Exception as e:
+		raise HTTPException(status_code=500, detail=f"Failed to delete workflow step: {str(e)}")
+
+@db_wf_router.post("/{id:uuid}/execute/session", summary="Execute workflow with session token")
+async def execute_workflow_session(id: uuid.UUID, request: SessionWorkflowExecuteRequest):
+	"""Execute workflow using session-based authentication"""
+	try:
+		if not supabase:
+			raise HTTPException(status_code=503, detail="Database not configured")
+		
+		# Validate session token
+		user_id = await validate_session_token(request.session_token)
+		if not user_id:
+			raise HTTPException(status_code=401, detail="Invalid or expired session token")
+		
+		# Check ownership (optional - you might want to allow execution of public workflows)
+		workflow = await get_workflow_by_id(str(id))
+		if not workflow:
+			raise HTTPException(status_code=404, detail="Workflow not found")
+		
+		workflow_owner_id = workflow.get("owner_id")
+		if workflow_owner_id and workflow_owner_id != user_id:
+			raise HTTPException(status_code=403, detail="You don't have permission to execute this workflow")
+		
+		# For now, return a placeholder response since workflow execution 
+		# requires integration with the workflow engine
+		import uuid as uuid_lib
+		task_id = str(uuid_lib.uuid4())
+		
+		# TODO: Integrate with actual workflow execution engine
+		# This would typically involve:
+		# 1. Converting database workflow to executable format
+		# 2. Starting execution with provided inputs
+		# 3. Returning task ID for status tracking
+		
+		return WorkflowExecuteResponse(
+			success=True,
+			task_id=task_id,
+			workflow=workflow.get("name", "Unknown"),
+			log_position=0,
+			message="Workflow execution started (placeholder implementation)"
+		)
+		
+	except HTTPException:
+		raise
+	except Exception as e:
+		raise HTTPException(status_code=500, detail=f"Failed to execute workflow: {str(e)}")
