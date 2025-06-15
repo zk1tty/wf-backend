@@ -1,0 +1,29 @@
+[phases.setup]
+nixPkgs = [
+  "python39",
+  "python39Packages.pip",
+  "chromium",
+  "xvfb-run",
+  "fontconfig",
+  "freetype",
+  "harfbuzz",
+  "ca-certificates",
+  "ttf_bitstream_vera"
+]
+
+[phases.install]
+cmds = [
+  "pip install -r requirements.txt"
+]
+
+[phases.build]
+cmds = [
+  "echo 'Build phase complete'"
+]
+
+[start]
+cmd = "python -m uvicorn backend.api:app --host 0.0.0.0 --port $PORT"
+
+[variables]
+PLAYWRIGHT_BROWSERS_PATH = "/nix/store"
+DISPLAY = ":99" 
