@@ -40,6 +40,34 @@ app.add_middleware(
 # Initialize service with app instance
 service = get_service(app=app)
 
+# Health check endpoint for Railway
+@app.get("/health")
+async def health_check():
+	"""Health check endpoint for Railway deployment monitoring."""
+	try:
+		# Basic health checks
+		health_status = {
+			"status": "healthy",
+			"service": "rebrowse-backend",
+			"llm_available": service.llm_instance is not None,
+			"browser_available": service.browser_instance is not None,
+			"tmp_dir_exists": service.tmp_dir.exists(),
+		}
+		
+		# Check if we can create a simple file (filesystem test)
+		test_file = service.tmp_dir / "health_check.txt"
+		try:
+			test_file.write_text("health_check")
+			test_file.unlink()  # Clean up
+			health_status["filesystem_writable"] = True
+		except Exception:
+			health_status["filesystem_writable"] = False
+		
+		return health_status
+		
+	except Exception as e:
+		raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
+
 # Include routers
 app.include_router(local_wf_router)
 app.include_router(db_wf_router)
