@@ -18,6 +18,11 @@ app = FastAPI(title='Rebrowse Service')
 origins = [
     "https://app.rebrowse.me",         # production UI
     "http://localhost:5173",           # local Vite dev
+    "http://localhost:3000",           # React dev server
+    "http://localhost:8080",           # Alternative dev server
+    "http://127.0.0.1:5173",           # local Vite dev (127.0.0.1)
+    "http://127.0.0.1:3000",           # React dev server (127.0.0.1)
+    "http://127.0.0.1:8080",           # Alternative dev server (127.0.0.1)
     "chrome-extension://<EXT_ID>",     # Chrome extension
 ]
 origin_regex = r"https:\/\/.*\.vercel\.app"   # Vercel preview URLs
@@ -27,7 +32,7 @@ app.add_middleware(
     allow_origins=origins,
     allow_origin_regex=origin_regex,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, PATCH, DELETE, PUT, OPTIONS)
     allow_headers=["*"],
 )
 #-----
