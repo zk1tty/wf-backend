@@ -46,6 +46,19 @@ RUN pip install PyJWT>=2.8.0
 RUN pip install python-dotenv>=1.0.0
 RUN pip install browser-use>=0.2.4
 
+# Install Playwright and browsers (CRITICAL for browser-use)
+RUN pip install playwright>=1.40.0
+RUN playwright install chromium
+RUN playwright install-deps chromium
+
+# Verify Playwright installation
+RUN echo "=== Playwright Installation Verification ===" && \
+    python -c "import playwright; print('Playwright version:', playwright.__version__)" && \
+    python -c "from browser_use import Browser; print('browser-use import successful')" && \
+    find /root/.cache/ms-playwright -name 'chrome*' -type f | head -5 && \
+    ls -la /root/.cache/ms-playwright/ && \
+    echo "=== Verification Complete ==="
+
 # Copy application code
 COPY . .
 

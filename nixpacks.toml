@@ -2,17 +2,26 @@
 nixPkgs = ["python311", "python311Packages.pip"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = [
+  "pip install -r requirements.txt",
+  "pip install playwright>=1.40.0",
+  "playwright install chromium",
+  "playwright install-deps chromium"
+]
 
 [phases.build]
 cmds = [
   "echo 'Build phase complete'",
-  "echo 'Chromium path:' $(which chromium || echo 'not found')",
-  "echo 'Display setup: DISPLAY=$DISPLAY'"
+  "echo 'System chromium:' $(which chromium || echo 'not found')",
+  "echo 'Playwright chromium:' $(find /root/.cache/ms-playwright -name 'chrome*' -type f 2>/dev/null | head -5 || echo 'not found')",
+  "echo 'Playwright directory:' $(ls -la /root/.cache/ms-playwright/ 2>/dev/null || echo 'directory not found')",
+  "echo 'Display setup: DISPLAY=$DISPLAY'",
+  "python -c \"import playwright; print('Playwright version:', playwright.__version__)\" || echo 'Playwright import failed'",
+  "python -c \"from browser_use import Browser; print('browser-use import successful')\" || echo 'browser-use import failed'"
 ]
 
 [start]
-cmd = "python -m uvicorn backend.api:app --host 0.0.0.0 --port $PORT"
+cmd = "xvfb-run -a -s '-screen 0 1920x1080x24' python -m uvicorn backend.api:app --host 0.0.0.0 --port $PORT"
 
 [variables]
 DISPLAY = ":99" 
