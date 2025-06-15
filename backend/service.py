@@ -51,7 +51,8 @@ class WorkflowService:
 			print(f'Error initializing LLM: {exc}. Ensure OPENAI_API_KEY is set.')
 			self.llm_instance = None
 
-		self.browser_instance = Browser()
+		# Browser configuration for production/Railway
+		self.browser_instance = self._create_browser_instance()
 		self.controller_instance = WorkflowController()
 		self.recording_service = RecordingService(app=app)
 
@@ -59,6 +60,42 @@ class WorkflowService:
 		self.active_tasks: Dict[str, TaskInfo] = {}
 		self.workflow_tasks: Dict[str, asyncio.Task] = {}
 		self.cancel_events: Dict[str, asyncio.Event] = {}
+
+	def _create_browser_instance(self) -> Browser:
+		"""Create browser instance with appropriate configuration for environment."""
+		import os
+		
+		# Check if we're in production (Railway sets RAILWAY_ENVIRONMENT)
+		is_production = os.getenv('RAILWAY_ENVIRONMENT') is not None or os.getenv('RENDER') is not None
+		
+		if is_production:
+			# Production configuration for Railway/cloud deployment
+			from browser_use.browser.browser import BrowserProfile
+			
+			profile = BrowserProfile(
+				headless=True,  # Run without GUI
+				disable_security=True,  # Disable security for automation
+				args=[
+					'--no-sandbox',  # Required for Docker/Railway
+					'--disable-dev-shm-usage',  # Overcome limited resource problems
+					'--disable-gpu',  # Disable GPU hardware acceleration
+					'--disable-web-security',  # Disable web security for automation
+					'--disable-features=VizDisplayCompositor',  # Disable compositor
+					'--disable-background-timer-throttling',  # Disable background throttling
+					'--disable-backgrounding-occluded-windows',
+					'--disable-renderer-backgrounding',
+					'--disable-field-trial-config',
+					'--disable-ipc-flooding-protection',
+					'--single-process',  # Use single process (saves memory)
+				]
+			)
+			
+			print("[WorkflowService] Initializing browser in PRODUCTION mode (headless)")
+			return Browser(browser_profile=profile)
+		else:
+			# Local development configuration
+			print("[WorkflowService] Initializing browser in DEVELOPMENT mode")
+			return Browser()
 
 	def _get_timestamp(self) -> str:
 		"""Get current timestamp in the format used for logging."""
@@ -395,6 +432,121 @@ class WorkflowService:
 
 		self.active_tasks[task_id].status = 'cancelling'
 		return WorkflowCancelResponse(success=True, message='Workflow cancellation requested')
+
+	async def run_workflow_session_in_background(
+		self,
+		task_id: str,
+		workflow_id: str,
+		inputs: dict,
+		cancel_event: asyncio.Event,
+		owner_id: Optional[str] = None,
+	) -> None:
+		"""Execute a workflow from database using session-based authentication."""
+		log_file = self.log_dir / 'backend.log'
+		temp_file = None
+		
+		try:
+			# Fetch workflow from database
+			workflow_data = await get_workflow_by_id(workflow_id)
+			if not workflow_data:
+				raise ValueError(f"Workflow {workflow_id} not found in database")
+			
+			# Verify ownership if owner_id provided
+			if owner_id and workflow_data.get('owner_id') != owner_id:
+				raise ValueError(f"Access denied: User {owner_id} does not own workflow {workflow_id}")
+			
+			workflow_name = workflow_data.get('name', f'workflow_{workflow_id}')
+			
+			self.active_tasks[task_id] = TaskInfo(status='running', workflow=workflow_name)
+			await self._write_log(log_file, f"[{self._get_timestamp()}] Starting session workflow '{workflow_name}' (ID: {workflow_id})\n")
+			await self._write_log(log_file, f'[{self._get_timestamp()}] Input parameters: {json.dumps(inputs)}\n')
+
+			if cancel_event.is_set():
+				await self._write_log(log_file, f'[{self._get_timestamp()}] Workflow cancelled before execution\n')
+				self.active_tasks[task_id].status = 'cancelled'
+				return
+
+			# Create temporary workflow file
+			temp_file = self.tmp_dir / f"temp_session_{task_id}_{workflow_id}.json"
+			temp_file.write_text(json.dumps(workflow_data))
+			
+			await self._write_log(log_file, f'[{self._get_timestamp()}] Created temporary workflow file: {temp_file.name}\n')
+
+			try:
+				self.workflow_obj = Workflow.load_from_file(
+					str(temp_file), 
+					llm=self.llm_instance, 
+					browser=self.browser_instance, 
+					controller=self.controller_instance
+				)
+			except Exception as e:
+				await self._write_log(log_file, f'[{self._get_timestamp()}] Error loading workflow: {e}\n')
+				raise ValueError(f'Error loading workflow: {e}')
+
+			await self._write_log(log_file, f'[{self._get_timestamp()}] Executing workflow...\n')
+
+			if cancel_event.is_set():
+				await self._write_log(log_file, f'[{self._get_timestamp()}] Workflow cancelled before execution\n')
+				self.active_tasks[task_id].status = 'cancelled'
+				return
+
+			result = await self.workflow_obj.run(inputs, close_browser_at_end=True, cancel_event=cancel_event)
+
+			if cancel_event.is_set():
+				await self._write_log(log_file, f'[{self._get_timestamp()}] Workflow execution was cancelled\n')
+				self.active_tasks[task_id].status = 'cancelled'
+				return
+
+			formatted_result = []
+			for i, s in enumerate(result.step_results):
+				content = None
+				if isinstance(s, ActionResult):  # Handle agentic steps and agent fallback
+					content = s.extracted_content
+				elif hasattr(s, 'history') and s.history:  # AgentHistoryList
+					# For AgentHistoryList, get the last successful result
+					last_item = s.history[-1]
+					last_action_result = next(
+						(r for r in reversed(last_item.result) if r.extracted_content is not None),
+						None,
+					)
+					if last_action_result:
+						content = last_action_result.extracted_content
+
+				formatted_result.append(
+					{
+						'step_id': i,
+						'extracted_content': content,
+						'status': 'completed',
+					}
+				)
+
+			for step in formatted_result:
+				await self._write_log(
+					log_file, f'[{self._get_timestamp()}] Completed step {step["step_id"]}: {step["extracted_content"]}\n'
+				)
+
+			self.active_tasks[task_id].status = 'completed'
+			self.active_tasks[task_id].result = formatted_result
+			await self._write_log(
+				log_file, f'[{self._get_timestamp()}] Session workflow completed successfully with {len(result.step_results)} steps\n'
+			)
+
+		except asyncio.CancelledError:
+			await self._write_log(log_file, f'[{self._get_timestamp()}] Session workflow force‑cancelled\n')
+			self.active_tasks[task_id].status = 'cancelled'
+			raise
+		except Exception as exc:
+			await self._write_log(log_file, f'[{self._get_timestamp()}] Session workflow error: {exc}\n')
+			self.active_tasks[task_id].status = 'failed'
+			self.active_tasks[task_id].error = str(exc)
+		finally:
+			# Clean up temporary file
+			if temp_file and temp_file.exists():
+				try:
+					temp_file.unlink()
+					await self._write_log(log_file, f'[{self._get_timestamp()}] Cleaned up temporary file: {temp_file.name}\n')
+				except Exception as e:
+					await self._write_log(log_file, f'[{self._get_timestamp()}] Warning: Failed to cleanup temp file {temp_file.name}: {e}\n')
 
 	def add_workflow(self, request: WorkflowAddRequest) -> WorkflowResponse:
 		"""Add a new workflow file."""

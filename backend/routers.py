@@ -690,32 +690,54 @@ async def execute_workflow_session(id: uuid.UUID, request: SessionWorkflowExecut
 		if not user_id:
 			raise HTTPException(status_code=401, detail="Invalid or expired session token")
 		
-		# Check ownership (optional - you might want to allow execution of public workflows)
+		# Check workflow exists
 		workflow = await get_workflow_by_id(str(id))
 		if not workflow:
 			raise HTTPException(status_code=404, detail="Workflow not found")
 		
+		# Check ownership (allow execution of public workflows)
 		workflow_owner_id = workflow.get("owner_id")
 		if workflow_owner_id and workflow_owner_id != user_id:
 			raise HTTPException(status_code=403, detail="You don't have permission to execute this workflow")
 		
-		# For now, return a placeholder response since workflow execution 
-		# requires integration with the workflow engine
+		# Get workflow service instance
+		service = get_service()
+		
+		# Generate task ID and setup cancellation
 		import uuid as uuid_lib
 		task_id = str(uuid_lib.uuid4())
+		cancel_event = asyncio.Event()
+		service.cancel_events[task_id] = cancel_event
 		
-		# TODO: Integrate with actual workflow execution engine
-		# This would typically involve:
-		# 1. Converting database workflow to executable format
-		# 2. Starting execution with provided inputs
-		# 3. Returning task ID for status tracking
+		# Get log position for tracking
+		log_pos = await service._log_file_position()
+		
+		# Start workflow execution in background
+		task = asyncio.create_task(
+			service.run_workflow_session_in_background(
+				task_id=task_id,
+				workflow_id=str(id),
+				inputs=request.inputs or {},
+				cancel_event=cancel_event,
+				owner_id=user_id
+			)
+		)
+		
+		# Track the task for cleanup
+		service.workflow_tasks[task_id] = task
+		task.add_done_callback(
+			lambda _: (
+				service.workflow_tasks.pop(task_id, None),
+				service.cancel_events.pop(task_id, None),
+			)
+		)
 		
 		return WorkflowExecuteResponse(
 			success=True,
 			task_id=task_id,
 			workflow=workflow.get("name", "Unknown"),
-			log_position=0,
-			message="Workflow execution started (placeholder implementation)"
+			log_position=log_pos,
+			message=f"Workflow '{workflow.get('name', 'Unknown')}' execution started with task ID: {task_id}"
 		)
 		
 	except HTTPException:
