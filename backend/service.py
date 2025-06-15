@@ -1,14 +1,18 @@
 import asyncio
 import json
+import logging
+import os
+import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 import aiofiles
 from browser_use.agent.views import ActionResult
 from browser_use.browser.browser import Browser
 from langchain_openai import ChatOpenAI
+from supabase import Client
 
 from workflow_use.builder.service import BuilderService
 from workflow_use.controller.service import WorkflowController
@@ -32,13 +36,28 @@ from .views import (
 	WorkflowJobStatus,
 )
 
+from workflow_use.browser.custom_screensaver import patch_browser_use_screensaver
+
 # Add job tracking at module level
 workflow_jobs: Dict[str, WorkflowJobStatus] = {}
+
+# Global task storage for tracking background executions
+background_tasks: Dict[str, Dict[str, Any]] = {}
+
+logger = logging.getLogger(__name__)
 
 class WorkflowService:
 	"""Workflow execution service."""
 
-	def __init__(self, app=None) -> None:
+	def __init__(self, supabase_client: Client, app=None) -> None:
+		self.supabase = supabase_client
+		
+		# Patch the browser-use screensaver with rebrowse logo
+		patch_browser_use_screensaver(
+			logo_url=None,  # Will auto-detect rebrowse.png
+			logo_text="rebrowse"  # Fallback text if logo not found
+		)
+		
 		# ---------- Core resources to fetch from local storage ----------
 		self.tmp_dir: Path = Path('./tmp')
 		self.log_dir: Path = self.tmp_dir / 'logs'
@@ -63,7 +82,6 @@ class WorkflowService:
 
 	def _create_browser_instance(self) -> Browser:
 		"""Create browser instance with appropriate configuration for environment."""
-		import os
 		import shutil
 		
 		# Check if we're in production (Railway sets RAILWAY_ENVIRONMENT)
@@ -495,7 +513,7 @@ class WorkflowService:
 		
 		try:
 			# Fetch workflow from database
-			workflow_data = await get_workflow_by_id(workflow_id)
+			workflow_data = self.get_workflow_by_id(workflow_id)
 			if not workflow_data:
 				raise ValueError(f"Workflow {workflow_id} not found in database")
 			
@@ -702,6 +720,21 @@ class WorkflowService:
 		except Exception as e:
 			print(f'Error building workflow: {e}')
 			return WorkflowBuildResponse(success=False, message='Failed to build workflow', error=str(e))
+
+	def get_workflow_by_id(self, workflow_id: str) -> Optional[Dict[str, Any]]:
+		"""Fetch workflow from database by ID."""
+		try:
+			response = self.supabase.table('workflows').select('*').eq('id', workflow_id).execute()
+			
+			if response.data and len(response.data) > 0:
+				return response.data[0]
+			else:
+				logger.warning(f"No workflow found with ID: {workflow_id}")
+				return None
+				
+		except Exception as e:
+			logger.error(f"Error fetching workflow {workflow_id}: {e}")
+			return None
 
 
 # ─── Supabase Service Helpers ────────

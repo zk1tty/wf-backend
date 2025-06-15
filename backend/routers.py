@@ -32,7 +32,9 @@ _service = None
 def get_service(app=None) -> WorkflowService:
 	global _service
 	if _service is None:
-		_service = WorkflowService(app=app)
+		if supabase is None:
+			raise RuntimeError("Supabase client not initialized. Please check your environment variables.")
+		_service = WorkflowService(supabase_client=supabase, app=app)
 	return _service
 
 
@@ -462,7 +464,7 @@ async def update_wf_metadata_session(id: uuid.UUID, request: SessionWorkflowMeta
 		if request.version is not None:
 			update_data["version"] = request.version
 		if request.input_schema is not None:
-			update_data["input_schema"] = request.input_schema
+			update_data["input_schema"] = json.dumps(request.input_schema)
 		
 		supabase.table("workflows").update(update_data).eq("id", str(id)).execute()
 		
