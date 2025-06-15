@@ -90,6 +90,58 @@ class BuilderService:
 		logger.debug(f'Generated actions markdown:\n{lines}')
 		return '\n'.join(lines)
 
+	def _repair_workflow_data(self, workflow_dict: Dict[str, Any]) -> Dict[str, Any]:
+		"""Repair common issues in LLM-generated workflow data."""
+		logger.debug("Applying workflow data repairs...")
+		
+		steps = workflow_dict.get('steps', [])
+		repaired_steps = []
+		
+		for i, step in enumerate(steps):
+			step_type = step.get('type')
+			
+			if step_type == 'key_press':
+				# Check if key field is missing
+				if not step.get('key'):
+					# Try to infer key from description
+					description = step.get('description', '').lower()
+					
+					if 'backspace' in description:
+						step['key'] = 'Backspace'
+						logger.info(f"Repaired step {i}: Added missing key 'Backspace' based on description")
+					elif 'tab' in description or 'next field' in description:
+						step['key'] = 'Tab'
+						logger.info(f"Repaired step {i}: Added missing key 'Tab' based on description")
+					elif 'enter' in description or 'submit' in description:
+						step['key'] = 'Enter'
+						logger.info(f"Repaired step {i}: Added missing key 'Enter' based on description")
+					elif 'escape' in description:
+						step['key'] = 'Escape'
+						logger.info(f"Repaired step {i}: Added missing key 'Escape' based on description")
+					else:
+						# Default fallback - use Tab as it's most common
+						step['key'] = 'Tab'
+						logger.warning(f"Repaired step {i}: Added default key 'Tab' (could not infer from description: '{step.get('description', 'N/A')}')")
+			
+			elif step_type == 'input':
+				# Ensure input steps have required value field
+				if not step.get('value'):
+					step['value'] = ''
+					logger.warning(f"Repaired step {i}: Added empty value to input step")
+			
+			elif step_type == 'navigation':
+				# Ensure navigation steps have required url field
+				if not step.get('url'):
+					step['url'] = 'about:blank'
+					logger.warning(f"Repaired step {i}: Added default URL to navigation step")
+			
+			repaired_steps.append(step)
+		
+		workflow_dict['steps'] = repaired_steps
+		logger.debug(f"Workflow repair complete. Processed {len(steps)} steps.")
+		
+		return workflow_dict
+
 	@staticmethod
 	def _find_first_user_interaction_url(events: List[Dict[str, Any]]) -> Optional[str]:
 		"""Finds the URL of the first recorded user interaction."""
@@ -128,9 +180,15 @@ class BuilderService:
 			logger.warning('Could not reliably extract JSON from LLM output, attempting parse anyway.')
 
 		try:
-			# Try parsing directly first (might work with structured output)
-			workflow_data = WorkflowDefinitionSchema.model_validate_json(content_to_parse)
-			logger.info('Successfully parsed LLM output into WorkflowDefinitionSchema.')
+			# Parse JSON first
+			workflow_dict = json.loads(content_to_parse)
+			
+			# Apply validation and repair before Pydantic validation
+			workflow_dict = self._repair_workflow_data(workflow_dict)
+			
+			# Now validate with Pydantic
+			workflow_data = WorkflowDefinitionSchema.model_validate(workflow_dict)
+			logger.info('Successfully parsed and repaired LLM output into WorkflowDefinitionSchema.')
 			return workflow_data
 		except (json.JSONDecodeError, ValidationError) as e:
 			logger.error(f'Failed to parse LLM output into WorkflowDefinitionSchema: {e}')
