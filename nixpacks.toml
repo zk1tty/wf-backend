@@ -8,22 +8,44 @@ nixPkgs = [
   "freetype",
   "harfbuzz",
   "ca-certificates",
-  "ttf_bitstream_vera"
+  "ttf_bitstream_vera",
+  "liberation_ttf",
+  "dejavu_fonts",
+  "nss",
+  "atk",
+  "cups",
+  "gtk3",
+  "libdrm",
+  "libxkbcommon",
+  "libxcomposite",
+  "libxdamage",
+  "libxrandr",
+  "mesa",
+  "expat",
+  "libxfixes",
+  "libxss"
 ]
 
 [phases.install]
 cmds = [
-  "pip install -r requirements.txt"
+  "pip install -r requirements.txt",
+  "pip install playwright",
+  "playwright install-deps chromium || echo 'Playwright deps install failed, continuing...'",
+  "which chromium-browser || which chromium || echo 'Chromium location check'"
 ]
 
 [phases.build]
 cmds = [
-  "echo 'Build phase complete'"
+  "echo 'Build phase complete'",
+  "echo 'Chromium path:' $(which chromium-browser || which chromium || echo 'not found')",
+  "echo 'Display setup: DISPLAY=$DISPLAY'"
 ]
 
 [start]
-cmd = "python -m uvicorn backend.api:app --host 0.0.0.0 --port $PORT"
+cmd = "xvfb-run -a -s '-screen 0 1920x1080x24' python -m uvicorn backend.api:app --host 0.0.0.0 --port $PORT"
 
 [variables]
 PLAYWRIGHT_BROWSERS_PATH = "/nix/store"
-DISPLAY = ":99" 
+DISPLAY = ":99"
+CHROMIUM_PATH = "/nix/store"
+BROWSER_EXECUTABLE_PATH = "/usr/bin/chromium-browser" 
