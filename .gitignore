@@ -190,3 +190,6 @@ data/
 *.pdf
 
 user_data_dir
+
+# pyenv bin
+wf-be/

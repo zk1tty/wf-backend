@@ -1,17 +1,8 @@
 [phases.setup]
-nixPkgs = [
-  "python39",
-  "python39Packages.pip",
-  "chromium",
-  "xvfb-run",
-  "fontconfig",
-  "dejavu_fonts"
-]
+nixPkgs = ["python39", "python39Packages.pip"]
 
 [phases.install]
-cmds = [
-  "pip install -r requirements.txt"
-]
+cmds = ["pip install -r requirements.txt"]
 
 [phases.build]
 cmds = [
@@ -21,7 +12,7 @@ cmds = [
 ]
 
 [start]
-cmd = "xvfb-run -a -s '-screen 0 1920x1080x24' python -m uvicorn backend.api:app --host 0.0.0.0 --port $PORT"
+cmd = "python -m uvicorn backend.api:app --host 0.0.0.0 --port $PORT"
 
 [variables]
 DISPLAY = ":99" 
