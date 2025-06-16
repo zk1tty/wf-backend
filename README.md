@@ -8,11 +8,14 @@
     source .venv/bin/activate
 
     # Manage Python packages with a pip-compatible interface
-    uv install pip install -r requirement.txt
+    uv pip install -r requirements.txt
 
     # Run uvicorn
-    ENV=prod uvicorn backend.api:app --reload
+    ENV=dev uvicorn backend.api:app --reload
     ```
+
+
+If you get issue like `ModuleNotFoundError: No module named 'supabase`?
 
 - instalation help command
     ```
