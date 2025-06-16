@@ -7,6 +7,29 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.routers import get_service, local_wf_router, db_wf_router
+from backend.dependencies import validate_session_token
+from fastapi import APIRouter
+
+# Create auth router
+auth_router = APIRouter(prefix='/auth')
+
+@auth_router.get("/validate", summary="Validate session token")
+async def validate_session(session_token: str):
+    """Validate a Supabase session token and return user information"""
+    try:
+        user_id = await validate_session_token(session_token)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid or expired session token")
+        
+        return {
+            "valid": True,
+            "user_id": user_id,
+            "message": "Session token is valid"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Session validation failed: {str(e)}")
 
 # Set event loop policy for Windows
 if sys.platform == 'win32':
@@ -193,6 +216,7 @@ async def test_browser():
 		raise HTTPException(status_code=500, detail=f"Browser test failed: {str(e)}")
 
 # Include routers
+app.include_router(auth_router)
 app.include_router(local_wf_router)
 app.include_router(db_wf_router)
 

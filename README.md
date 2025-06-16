@@ -47,6 +47,13 @@ POST |	/workflows/tasks/{task_id}/cancel	| Cancel workflow execution
 GET	| /workflows/logs/{task_id}	| Get execution logs
 GET	| /health	Health check for | monitoring
 
+## Auth ENdpoint
+
+📊 | Authentication | API
+--|--|--
+Method | Endpoint | Description
+GET | /auth/validate | Validate session token
+
 
 ## Browser instance 
 
