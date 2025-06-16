@@ -754,7 +754,7 @@ async def build_workflow_from_recording_data(recording_data: dict, user_goal: st
 		# Initialize the builder service with the LLM instance
 		if not hasattr(build_workflow_from_recording_data, '_builder_service'):
 			from langchain_openai import ChatOpenAI
-			llm_instance = ChatOpenAI(model='gpt-4o-mini')
+			llm_instance = ChatOpenAI(model='gpt-4o')
 			build_workflow_from_recording_data._builder_service = BuilderService(llm=llm_instance)
 		
 		builder_service = build_workflow_from_recording_data._builder_service
@@ -770,9 +770,9 @@ async def build_workflow_from_recording_data(recording_data: dict, user_goal: st
 			use_screenshots=False  # We don't need screenshots for API use
 		)
 		
-		# Set workflow name if provided
-		if workflow_name:
-			built_workflow.name = workflow_name
+		# Use LLM-generated name first, fallback to provided name
+		if not built_workflow.name or built_workflow.name.strip() == "":
+			built_workflow.name = workflow_name or "New Workflow"
 			
 		# Set timestamps for steps that don't have them
 		import time

@@ -111,3 +111,15 @@ profile = BrowserProfile(
 )
 return Browser(browser_profile=profile)
 ```
+
+
+## Conversion test
+```
+curl -X POST "http://localhost:8000/workflows/build-from-recording" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "recording": {"name":"Test","description":"Test","version":"1.0","steps":[{"type":"navigation","url":"https://amazon.com","timestamp":1650000000000}],"input_schema":[]},
+    "goal": "Shop for products on Amazon",
+    "name": null
+  }'
+```
