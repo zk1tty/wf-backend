@@ -16,6 +16,7 @@ dependencies = [
     "browser-use>=0.2.4",
     "fastapi>=0.115.12",
     "fastmcp>=2.3.4",
+    "pyperclip>=1.9.0",
     "supabase>=2.15.3",
     "typer>=0.15.3",
     "uvicorn>=0.34.2",

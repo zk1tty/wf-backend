@@ -1,11 +1,13 @@
 import asyncio
 import logging
+import pyperclip
 
 from browser_use import Browser
 from browser_use.agent.views import ActionResult
 from browser_use.controller.service import Controller
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.prompts import PromptTemplate
+from playwright.async_api import Page
 
 from workflow_use.controller.utils import get_best_element_handle, truncate_selector
 from workflow_use.controller.views import (
@@ -16,6 +18,8 @@ from workflow_use.controller.views import (
 	PageExtractionAction,
 	ScrollDeterministicAction,
 	SelectDropdownOptionDeterministicAction,
+	ClipboardCopyAction,
+	ClipboardPasteAction,
 )
 
 logger = logging.getLogger(__name__)
@@ -239,3 +243,76 @@ class WorkflowController(Controller):
 				msg = f'📄  Extracted from page\n: {content}\n'
 				logger.info(msg)
 				return ActionResult(extracted_content=msg)
+
+		# === CLIPBOARD OPERATIONS (Simplified with pyperclip) ===
+
+		@self.registry.action(
+			'Copy content to clipboard from element',
+			param_model=ClipboardCopyAction,
+		)
+		async def clipboard_copy(params: ClipboardCopyAction, browser_session: Browser) -> ActionResult:
+			"""Copy content to system clipboard using pyperclip."""
+			page = await browser_session.get_current_page()
+			
+			try:
+				content_to_copy = params.content
+				
+				# If CSS selector is provided, get content from that element
+				if params.cssSelector:
+					try:
+						locator, selector_used = await get_best_element_handle(
+							page, params.cssSelector, params, timeout_ms=DEFAULT_ACTION_TIMEOUT_MS
+						)
+						# Get text content or value from the element
+						element_content = await locator.evaluate('(el) => el.value || el.textContent || el.innerText')
+						if element_content:
+							content_to_copy = element_content
+					except Exception as e:
+						logger.warning(f'Could not get content from element {params.cssSelector}: {e}')
+				
+				# Copy to system clipboard using pyperclip
+				pyperclip.copy(content_to_copy)
+				
+				msg = f'📋  Copied to clipboard: {content_to_copy[:100]}{"..." if len(content_to_copy) > 100 else ""}'
+				logger.info(msg)
+				return ActionResult(extracted_content=msg, include_in_memory=True)
+				
+			except Exception as e:
+				error_msg = f'Failed to copy to clipboard: {str(e)}'
+				logger.error(error_msg)
+				raise Exception(error_msg)
+
+		@self.registry.action(
+			'Paste content from clipboard to specified element',
+			param_model=ClipboardPasteAction,
+		)
+		async def clipboard_paste(params: ClipboardPasteAction, browser_session: Browser) -> ActionResult:
+			"""Paste content from system clipboard to the specified element."""
+			page = await browser_session.get_current_page()
+			
+			try:
+				# Get content from system clipboard
+				clipboard_content = pyperclip.paste()
+				
+				# Use provided content or clipboard content
+				content_to_paste = params.content if params.content else clipboard_content
+				
+				# Get the target element
+				locator, selector_used = await get_best_element_handle(
+					page, params.cssSelector, params, timeout_ms=DEFAULT_ACTION_TIMEOUT_MS
+				)
+				
+				# Focus the element and type the content
+				await locator.focus()
+				await asyncio.sleep(0.2)
+				await locator.fill('')  # Clear existing content
+				await page.keyboard.type(content_to_paste)
+				
+				msg = f'📋  Pasted to element {truncate_selector(selector_used)}: {content_to_paste[:100]}{"..." if len(content_to_paste) > 100 else ""}'
+				logger.info(msg)
+				return ActionResult(extracted_content=msg, include_in_memory=True)
+				
+			except Exception as e:
+				error_msg = f'Failed to paste from clipboard: {str(e)}'
+				logger.error(error_msg)
+				raise Exception(error_msg)
