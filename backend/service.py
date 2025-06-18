@@ -665,7 +665,7 @@ class WorkflowService:
 			built_workflow = await builder_service.build_workflow(
 				input_workflow=request.workflow,
 				user_goal=request.prompt,
-				use_screenshots=False,  # We don't need screenshots for now
+				use_screenshots=False,  # TODO: We don't need screenshots for now
 			)
 
 			# Set timestamps for steps that don't have them
@@ -748,6 +748,29 @@ async def get_workflow_by_id(workflow_id: str):
 		raise Exception("Failed to retrieve workflow")
 
 
+def sanitize_content(content: str | None) -> str:
+	"""Sanitize content to prevent database Unicode errors."""
+	if not content:
+		return content or ""
+	
+	# Remove null bytes and other problematic characters
+	content = content.replace('\x00', '')  # Remove null bytes
+	content = content.replace('\u0000', '')  # Remove Unicode null
+	
+	# Limit length to prevent overly long content
+	if len(content) > 10000:
+		content = content[:10000] + "... (truncated)"
+	
+	# Escape or remove problematic Unicode sequences
+	try:
+		# Test if content can be safely stored
+		content.encode('utf-8')
+		return content
+	except UnicodeEncodeError:
+		# Fallback: remove non-UTF-8 characters
+		return content.encode('utf-8', 'ignore').decode('utf-8')
+
+
 async def build_workflow_from_recording_data(recording_data: dict, user_goal: str, workflow_name: Optional[str] = None):
 	"""Build a workflow from recording JSON data using BuilderService."""
 	try:
@@ -767,7 +790,8 @@ async def build_workflow_from_recording_data(recording_data: dict, user_goal: st
 		built_workflow = await builder_service.build_workflow(
 			input_workflow=recording_schema,
 			user_goal=user_goal,
-			use_screenshots=False  # We don't need screenshots for API use
+			use_screenshots=False,  # Disabled for faster demo processing
+			max_images=0  # No images for faster processing
 		)
 		
 		# Use LLM-generated name first, fallback to provided name
@@ -795,7 +819,28 @@ async def build_workflow_from_recording_data(recording_data: dict, user_goal: st
 
 
 async def process_workflow_upload_async(job_id: str, recording_data: dict, user_goal: str, workflow_name: Optional[str] = None, owner_id: Optional[str] = None):
-	"""Process workflow upload in background and save to database."""
+	"""Process workflow upload with improved error handling and granular progress updates."""
+	import asyncio
+	
+	# Progress updater for granular progress during conversion
+	async def update_progress_gradually(start_progress: int, end_progress: int, max_duration: float):
+		"""Update progress every 10% with shorter intervals for responsiveness"""
+		progress_points = list(range(start_progress + 10, end_progress, 10))  # [20, 30, 40, 50, 60, 70]
+		if not progress_points:
+			return
+			
+		# Update every 0.8 seconds for responsiveness
+		update_interval = 0.8
+		
+		for target_progress in progress_points:
+			await asyncio.sleep(update_interval)
+			if job_id in workflow_jobs and workflow_jobs[job_id].progress < target_progress:
+				workflow_jobs[job_id].progress = target_progress
+				# Estimate remaining time based on current progress
+				progress_ratio = target_progress / end_progress
+				remaining_time = max(2, int(max_duration * (1 - progress_ratio)))
+				workflow_jobs[job_id].estimated_remaining_seconds = remaining_time
+	
 	try:
 		# Update job status: Starting conversion
 		workflow_jobs[job_id].status = "processing"
@@ -803,50 +848,107 @@ async def process_workflow_upload_async(job_id: str, recording_data: dict, user_
 		workflow_jobs[job_id].estimated_remaining_seconds = 25
 		
 		# Step 1: Convert recording to workflow (this takes time)
-		built_workflow = await build_workflow_from_recording_data(
-			recording_data=recording_data,
-			user_goal=user_goal,
-			workflow_name=workflow_name
-		)
+		try:
+			# Start gradual progress updates during conversion (10% → 80%)
+			progress_task = asyncio.create_task(
+				update_progress_gradually(start_progress=10, end_progress=80, max_duration=15)
+			)
+			
+			# Run conversion and progress updates concurrently
+			conversion_task = asyncio.create_task(build_workflow_from_recording_data(
+				recording_data=recording_data,
+				user_goal=user_goal,
+				workflow_name=workflow_name
+			))
+			
+			# Wait for conversion to complete
+			built_workflow = await conversion_task
+			
+			# Cancel progress updater and set final conversion progress
+			progress_task.cancel()
+			try:
+				await progress_task
+			except asyncio.CancelledError:
+				pass
+			
+			# Update progress: Conversion successful
+			workflow_jobs[job_id].progress = 80
+			workflow_jobs[job_id].estimated_remaining_seconds = 5
+			
+		except Exception as e:
+			# Conversion failed
+			workflow_jobs[job_id].status = "failed"
+			workflow_jobs[job_id].error = f"Workflow conversion failed: {str(e)}"
+			workflow_jobs[job_id].estimated_remaining_seconds = 0
+			print(f"Workflow conversion failed for job {job_id}: {e}")
+			return None
 		
-		# Update job status: Conversion complete, saving to DB
-		workflow_jobs[job_id].status = "processing"
-		workflow_jobs[job_id].progress = 80
-		workflow_jobs[job_id].estimated_remaining_seconds = 5
-		
-		# Step 2: Save to database
-		if not supabase:
-			raise Exception("Database not configured")
-		
-		from datetime import datetime
-		now = datetime.utcnow().isoformat()
-		
-		row = supabase.table("workflows").insert({
-			"owner_id": owner_id,  # Set owner_id from JWT
-			"name": built_workflow.name,
-			"version": built_workflow.version,
-			"description": built_workflow.description,
-			"workflow_analysis": built_workflow.workflow_analysis,
-			"steps": [step.model_dump() for step in built_workflow.steps],
-			"input_schema": [item.model_dump() for item in built_workflow.input_schema],
-			"created_at": now,
-			"updated_at": now
-		}).execute().data[0]
-		
-		# Job completed successfully
-		workflow_jobs[job_id].status = "completed" 
-		workflow_jobs[job_id].progress = 100
-		workflow_jobs[job_id].workflow_id = row["id"]
-		workflow_jobs[job_id].estimated_remaining_seconds = 0
-		
-		return row["id"]
+		# Step 2: Save to database with content sanitization
+		try:
+			if not supabase:
+				raise Exception("Database not configured")
+			
+			# Gradual progress during database operations (80% → 100%)
+			workflow_jobs[job_id].progress = 85
+			workflow_jobs[job_id].estimated_remaining_seconds = 3
+			await asyncio.sleep(0.3)  # Brief pause to make progress visible
+			
+			from datetime import datetime
+			now = datetime.utcnow().isoformat()
+			
+			# Progress: Sanitizing content
+			workflow_jobs[job_id].progress = 90
+			workflow_jobs[job_id].estimated_remaining_seconds = 2
+			await asyncio.sleep(0.2)  # Brief pause
+			
+			# Sanitize content before database insertion
+			sanitized_steps = []
+			for step in built_workflow.steps:
+				step_dict = step.model_dump()
+				# Remove or sanitize problematic Unicode characters
+				if 'content' in step_dict and step_dict['content']:
+					step_dict['content'] = sanitize_content(step_dict['content'])
+				sanitized_steps.append(step_dict)
+			
+			# Progress: Inserting into database
+			workflow_jobs[job_id].progress = 95
+			workflow_jobs[job_id].estimated_remaining_seconds = 1
+			await asyncio.sleep(0.2)  # Brief pause
+			
+			row = supabase.table("workflows").insert({
+				"owner_id": owner_id,
+				"name": sanitize_content(built_workflow.name),
+				"version": built_workflow.version,
+				"description": sanitize_content(built_workflow.description),
+				"workflow_analysis": sanitize_content(built_workflow.workflow_analysis),
+				"steps": sanitized_steps,
+				"input_schema": [item.model_dump() for item in built_workflow.input_schema],
+				"created_at": now,
+				"updated_at": now
+			}).execute().data[0]
+			
+			# Job completed successfully
+			workflow_jobs[job_id].status = "completed" 
+			workflow_jobs[job_id].progress = 100
+			workflow_jobs[job_id].workflow_id = row["id"]
+			workflow_jobs[job_id].estimated_remaining_seconds = 0
+			
+			return row["id"]
+			
+		except Exception as e:
+			# Database save failed
+			workflow_jobs[job_id].status = "failed"
+			workflow_jobs[job_id].error = f"Database save failed: {str(e)}"
+			workflow_jobs[job_id].estimated_remaining_seconds = 0
+			print(f"Database save failed for job {job_id}: {e}")
+			return None
 		
 	except Exception as e:
-		# Job failed
+		# Unexpected error
 		workflow_jobs[job_id].status = "failed"
-		workflow_jobs[job_id].error = str(e)
+		workflow_jobs[job_id].error = f"Unexpected error: {str(e)}"
 		workflow_jobs[job_id].estimated_remaining_seconds = 0
-		print(f"Workflow upload job {job_id} failed: {e}")
+		print(f"Unexpected error in job {job_id}: {e}")
 		return None
 
 
