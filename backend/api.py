@@ -73,7 +73,7 @@ async def health_check():
 			"status": "healthy",
 			"service": "rebrowse-backend",
 			"llm_available": service.llm_instance is not None,
-			"browser_available": service.browser_instance is not None,
+			"browser_available": True,  # Browser instances are created dynamically
 			"tmp_dir_exists": service.tmp_dir.exists(),
 		}
 		

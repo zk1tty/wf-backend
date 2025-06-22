@@ -714,14 +714,19 @@ async def execute_workflow_session(id: uuid.UUID, request: SessionWorkflowExecut
 		# Get log position for tracking
 		log_pos = await service._log_file_position()
 		
-		# Start workflow execution in background
+		# Validate execution mode
+		if request.mode not in ["cloud-run", "local-run"]:
+			raise HTTPException(status_code=400, detail="Invalid mode. Must be 'cloud-run' or 'local-run'")
+		
+		# Start workflow execution in background with specified mode
 		task = asyncio.create_task(
 			service.run_workflow_session_in_background(
 				task_id=task_id,
 				workflow_id=str(id),
 				inputs=request.inputs or {},
 				cancel_event=cancel_event,
-				owner_id=user_id
+				owner_id=user_id,
+				mode=request.mode
 			)
 		)
 		
@@ -739,7 +744,7 @@ async def execute_workflow_session(id: uuid.UUID, request: SessionWorkflowExecut
 			task_id=task_id,
 			workflow=workflow.get("name", "Unknown"),
 			log_position=log_pos,
-			message=f"Workflow '{workflow.get('name', 'Unknown')}' execution started with task ID: {task_id}"
+			message=f"Workflow '{workflow.get('name', 'Unknown')}' execution started with task ID: {task_id} (mode: {request.mode})"
 		)
 		
 	except HTTPException:

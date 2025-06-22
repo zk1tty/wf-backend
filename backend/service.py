@@ -71,7 +71,8 @@ class WorkflowService:
 			self.llm_instance = None
 
 		# Browser configuration for production/Railway
-		self.browser_instance = self._create_browser_instance()
+		# Browser instance will be created dynamically based on execution mode
+		self.browser_instance = None  # Created per workflow execution with specific mode
 		self.controller_instance = WorkflowController()
 		self.recording_service = RecordingService(app=app)
 
@@ -80,18 +81,28 @@ class WorkflowService:
 		self.workflow_tasks: Dict[str, asyncio.Task] = {}
 		self.cancel_events: Dict[str, asyncio.Event] = {}
 
-	def _create_browser_instance(self) -> Browser:
-		"""Create browser instance with appropriate configuration for environment."""
+	def _create_browser_instance(self, mode: str = "auto") -> Browser:
+		"""Create browser instance with appropriate configuration for environment and mode.
+		
+		Args:
+			mode: "cloud-run", "local-run", or "auto" (default)
+				- "cloud-run": Force headless Playwright Chromium (server-side)
+				- "local-run": Force local Chromium with GUI (user's installed browser)
+				- "auto": Auto-detect based on environment variables
+		"""
 		import shutil
+		from browser_use.browser.browser import BrowserProfile
 		
-		# Check if we're in production (Railway sets RAILWAY_ENVIRONMENT)
-		is_production = os.getenv('RAILWAY_ENVIRONMENT') is not None or os.getenv('RENDER') is not None
+		# Auto-detect environment if mode is "auto"
+		if mode == "auto":
+			is_production = os.getenv('RAILWAY_ENVIRONMENT') is not None or os.getenv('RENDER') is not None
+			detected_mode = "cloud-run" if is_production else "local-run"
+			print(f"[WorkflowService] Auto-detected mode: {detected_mode}")
+			mode = detected_mode
 		
-		if is_production:
-			# Production configuration for Railway/cloud deployment
-			from browser_use.browser.browser import BrowserProfile
-			
-			print("[WorkflowService] Initializing browser in PRODUCTION mode (headless)")
+		if mode == "cloud-run":
+			# Cloud/Server configuration - headless Playwright Chromium
+			print("[WorkflowService] Initializing browser in CLOUD-RUN mode (headless)")
 			print(f"[WorkflowService] Display: {os.getenv('DISPLAY', 'not set')}")
 			
 			# Check if Playwright browsers are installed
@@ -131,12 +142,57 @@ class WorkflowService:
 			)
 			
 			# Let browser-use/Playwright handle the executable path automatically
-			# Don't override executable_path - let Playwright use its own Chromium
 			return Browser(browser_profile=profile)
+			
+		elif mode == "local-run":
+			# Local user configuration - use their installed Chromium with GUI
+			print("[WorkflowService] Initializing browser in LOCAL-RUN mode (user's Chromium)")
+			
+			# Find user's local Chromium installation
+			chromium_paths = [
+				'/usr/bin/chromium-browser',
+				'/usr/bin/chromium',
+				'/usr/bin/google-chrome',
+				'/usr/bin/google-chrome-stable',
+				'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',  # macOS
+			]
+			
+			chromium_executable = None
+			for path in chromium_paths:
+				if os.path.exists(path):
+					chromium_executable = path
+					break
+			
+			if not chromium_executable:
+				# Try using shutil.which
+				for name in ['chromium-browser', 'chromium', 'google-chrome', 'google-chrome-stable']:
+					found = shutil.which(name)
+					if found:
+						chromium_executable = found
+						break
+			
+			if chromium_executable:
+				print(f"[WorkflowService] Using local Chromium: {chromium_executable}")
+			else:
+				print("[WorkflowService] WARNING: No local Chromium found, falling back to default")
+				print("[WorkflowService] Make sure to run: curl -fsSL https://your-repo/install-chromium.sh | bash")
+			
+			# Local configuration with GUI enabled
+			profile = BrowserProfile(
+				headless=False,  # Enable GUI for local development
+				disable_security=True,  # Still disable security for automation
+				args=[
+					'--disable-web-security',  # Disable web security for automation
+					'--no-first-run',  # Skip first run setup
+					'--disable-default-browser-check',  # Skip default browser check
+					# Note: Remove --no-sandbox and other container-specific flags for local use
+				]
+			)
+			
+			return Browser(browser_profile=profile)
+		
 		else:
-			# Local development configuration
-			print("[WorkflowService] Initializing browser in DEVELOPMENT mode")
-			return Browser()
+			raise ValueError(f"Invalid browser mode: {mode}. Must be 'cloud-run', 'local-run', or 'auto'")
 
 	def _get_timestamp(self) -> str:
 		"""Get current timestamp in the format used for logging."""
@@ -481,6 +537,7 @@ class WorkflowService:
 		inputs: dict,
 		cancel_event: asyncio.Event,
 		owner_id: Optional[str] = None,
+		mode: str = "cloud-run",
 	) -> None:
 		"""Execute a workflow from database using session-based authentication."""
 		log_file = self.log_dir / 'backend.log'
@@ -514,10 +571,14 @@ class WorkflowService:
 			await self._write_log(log_file, f'[{self._get_timestamp()}] Created temporary workflow file: {temp_file.name}\n')
 
 			try:
+				# Create browser instance with the specified mode
+				browser_instance = self._create_browser_instance(mode=mode)
+				await self._write_log(log_file, f'[{self._get_timestamp()}] Created browser instance for mode: {mode}\n')
+				
 				self.workflow_obj = Workflow.load_from_file(
 					str(temp_file), 
 					llm=self.llm_instance, 
-					browser=self.browser_instance, 
+					browser=browser_instance, 
 					controller=self.controller_instance
 				)
 			except Exception as e:

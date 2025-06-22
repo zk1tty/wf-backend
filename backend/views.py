@@ -149,3 +149,4 @@ class SessionWorkflowDeleteStepRequest(BaseModel):
 class SessionWorkflowExecuteRequest(BaseModel):
 	inputs: Dict[str, Any]  # Input parameters for workflow execution
 	session_token: str
+	mode: str = "cloud-run"  # "cloud-run" or "local-run"
