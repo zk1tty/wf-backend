@@ -5,7 +5,7 @@ import json
 import json as _json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, TypeVar
+from typing import Any, Dict, List, TypeVar, Optional, Callable
 
 from browser_use import Agent, Browser
 from browser_use.agent.views import ActionResult, AgentHistoryList
@@ -34,6 +34,14 @@ from workflow_use.schema.views import (
 from workflow_use.workflow.prompts import STRUCTURED_OUTPUT_PROMPT, WORKFLOW_FALLBACK_PROMPT_TEMPLATE
 from workflow_use.workflow.views import WorkflowRunOutput
 
+# Import visual streaming components
+try:
+	from workflow_use.browser.visual_browser import VisualWorkflowBrowser
+	from backend.visual_streaming import streaming_manager
+	VISUAL_STREAMING_AVAILABLE = True
+except ImportError:
+	VISUAL_STREAMING_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 WAIT_FOR_ELEMENT_TIMEOUT = 2500
@@ -53,6 +61,10 @@ class Workflow:
 		llm: BaseChatModel | None = None,
 		page_extraction_llm: BaseChatModel | None = None,
 		fallback_to_agent: bool = True,
+		# NEW: Visual streaming parameters
+		visual_streaming: bool = False,
+		session_id: Optional[str] = None,
+		event_callback: Optional[Callable] = None,
 	) -> None:
 		"""Initialize a new Workflow instance from a schema object.
 
@@ -62,6 +74,9 @@ class Workflow:
 			browser: Optional Browser instance to use for browser automation
 			llm: Optional language model for fallback agent functionality
 			fallback_to_agent: Whether to fall back to agent-based execution on step failure
+			visual_streaming: Enable visual streaming with rrweb recording
+			session_id: Session ID for visual streaming (required if visual_streaming=True)
+			event_callback: Callback function for rrweb events
 
 		Raises:
 			ValueError: If the workflow schema is invalid (though Pydantic handles most).
@@ -75,10 +90,36 @@ class Workflow:
 
 		self.controller = controller or WorkflowController()
 
-		self.browser = browser or Browser()
+		# NEW: Visual streaming setup
+		self.visual_streaming = visual_streaming and VISUAL_STREAMING_AVAILABLE
+		self.session_id = session_id
+		self.event_callback = event_callback
+		self.visual_browser: Optional[VisualWorkflowBrowser] = None
+		
+		if self.visual_streaming and not session_id:
+			raise ValueError("session_id is required when visual_streaming=True")
+		
+		if self.visual_streaming and not VISUAL_STREAMING_AVAILABLE:
+			logger.warning("Visual streaming requested but components not available, disabling...")
+			self.visual_streaming = False
 
-		# Hack to not close it after agent kicks in
-		self.browser.browser_profile.keep_alive = True
+		# Only initialize visual browser if visual streaming is enabled
+		if visual_streaming and session_id:
+			from workflow_use.browser.visual_browser import VisualWorkflowBrowser
+			self.visual_browser = VisualWorkflowBrowser(
+				session_id=session_id,  # type: ignore - already validated above
+				event_callback=self._create_streaming_callback()
+			)
+			# The visual browser will create its own Browser instance
+			self.browser = None  # Will be set after visual browser creates it
+		else:
+			self.browser = browser or Browser()
+
+		# Only set keep_alive=True if it's not already explicitly configured
+		# This preserves the keep_alive setting from our BrowserProfile configuration
+		if self.browser and (not hasattr(self.browser.browser_profile, 'keep_alive') or self.browser.browser_profile.keep_alive is None):
+			# Hack to not close it after agent kicks in (fallback for default browsers)
+			self.browser.browser_profile.keep_alive = True
 
 		self.llm = llm
 		self.page_extraction_llm = page_extraction_llm
@@ -90,6 +131,139 @@ class Workflow:
 		self.inputs_def: List[WorkflowInputSchemaDefinition] = self.schema.input_schema
 		self._input_model: type[BaseModel] = self._build_input_model()
 
+	def _create_streaming_callback(self) -> Optional[Callable]:
+		"""Create streaming callback that feeds events to the streaming system"""
+		if not self.visual_streaming or not self.session_id:
+			return None
+			
+		async def streaming_callback(event: Dict[str, Any]) -> None:
+			try:
+				if self.event_callback:
+					# Call user-provided callback first
+					await self.event_callback(event)
+				
+				# Feed into streaming system
+				if self.session_id:  # Type guard
+					streamer = streaming_manager.get_or_create_streamer(self.session_id)
+					await streamer.process_rrweb_event(event.get('event', {}))
+				
+				logger.debug(f"Processed visual event for session {self.session_id}: {event.get('event', {}).get('type', 'unknown')}")
+			except Exception as e:
+				logger.error(f"Error in visual streaming callback: {e}")
+		
+		return streaming_callback
+
+	async def _setup_visual_browser(self, headless: bool = True) -> Browser:
+		"""Setup visual browser for streaming"""
+		if not self.visual_browser:
+			raise RuntimeError("Visual browser not initialized")
+		
+		# Create browser instance
+		browser = await self.visual_browser.create_browser(headless=headless)
+		
+		# Inject rrweb for visual recording
+		injection_success = await self.visual_browser.inject_rrweb()
+		if injection_success:
+			await self.visual_browser.start_recording()
+			logger.info(f"Visual streaming started for session {self.session_id}")
+		else:
+			logger.warning(f"Failed to start visual recording for session {self.session_id}")
+		
+		return browser
+
+	async def execute_with_visual_streaming(
+		self,
+		inputs: dict[str, Any] | None = None,
+		close_browser_at_end: bool = True,
+		cancel_event: asyncio.Event | None = None,
+		output_model: type[T] | None = None,
+		headless: bool = True,
+	) -> WorkflowRunOutput[T]:
+		"""Enhanced workflow execution with visual streaming support"""
+		if not self.visual_streaming:
+			# Fallback to regular execution
+			return await self.run(inputs, close_browser_at_end, cancel_event, output_model)
+		
+		logger.info(f"▶️ Starting workflow execution with visual streaming for session {self.session_id}")
+		
+		try:
+			# Setup visual browser
+			self.browser = await self._setup_visual_browser(headless=headless)
+			
+			# Execute workflow with visual feedback
+			result = await self.run(inputs, close_browser_at_end, cancel_event, output_model)
+			
+			logger.info(f"Workflow execution completed with visual streaming for session {self.session_id}")
+			return result
+			
+		except Exception as e:
+			logger.error(f"Error in visual workflow execution: {e}")
+			raise
+		finally:
+			# Cleanup visual browser if needed
+			if close_browser_at_end and self.visual_browser:
+				await self.visual_browser.cleanup()
+
+	async def _execute_step_with_visual_feedback(
+		self, 
+		step_index: int, 
+		step_resolved: WorkflowStep
+	) -> ActionResult | AgentHistoryList:
+		"""Execute step with enhanced visual feedback"""
+		# Send step start event if visual streaming is enabled
+		if self.visual_streaming and self.visual_browser:
+			try:
+				# Send custom event about step start
+				step_start_event = {
+					'type': 5,  # Custom event type
+					'data': {
+						'tag': 'workflow_step',
+						'payload': {
+							'action': 'step_start',
+							'step_index': step_index,
+							'step_type': step_resolved.type,
+							'step_description': step_resolved.description or '',
+							'total_steps': len(self.steps)
+						}
+					},
+					'timestamp': asyncio.get_event_loop().time() * 1000
+				}
+				
+				await self.visual_browser._handle_rrweb_event(json.dumps(step_start_event))
+				logger.debug(f"Sent step start event for step {step_index + 1}")
+				
+			except Exception as e:
+				logger.warning(f"Failed to send step start event: {e}")
+		
+		# Execute the step
+		result = await self._execute_step(step_index, step_resolved)
+		
+		# Send step completion event if visual streaming is enabled
+		if self.visual_streaming and self.visual_browser:
+			try:
+				step_end_event = {
+					'type': 5,  # Custom event type
+					'data': {
+						'tag': 'workflow_step',
+						'payload': {
+							'action': 'step_complete',
+							'step_index': step_index,
+							'step_type': step_resolved.type,
+							'success': isinstance(result, ActionResult) and result.success if isinstance(result, ActionResult) else result.is_successful(),
+							'total_steps': len(self.steps)
+						}
+					},
+					'timestamp': asyncio.get_event_loop().time() * 1000
+				}
+				
+				await self.visual_browser._handle_rrweb_event(json.dumps(step_end_event))
+				logger.debug(f"Sent step completion event for step {step_index + 1}")
+				
+			except Exception as e:
+				logger.warning(f"Failed to send step completion event: {e}")
+		
+		return result
+
 	# --- Loaders ---
 	@classmethod
 	def load_from_file(
@@ -100,8 +274,12 @@ class Workflow:
 		browser: Browser | None = None,
 		llm: BaseChatModel | None = None,
 		page_extraction_llm: BaseChatModel | None = None,
+		# NEW: Visual streaming parameters
+		visual_streaming: bool = False,
+		session_id: Optional[str] = None,
+		event_callback: Optional[Callable] = None,
 	) -> Workflow:
-		"""Load a workflow from a file."""
+		"""Load a workflow from a file with optional visual streaming support."""
 		with open(file_path, 'r', encoding='utf-8') as f:
 			data = _json.load(f)
 		workflow_schema = WorkflowDefinitionSchema(**data)
@@ -111,6 +289,9 @@ class Workflow:
 			browser=browser,
 			llm=llm,
 			page_extraction_llm=page_extraction_llm,
+			visual_streaming=visual_streaming,
+			session_id=session_id,
+			event_callback=event_callback,
 		)
 
 	# --- Runners ---
@@ -162,6 +343,9 @@ class Workflow:
 
 		task: str = step.task
 		max_steps: int = step.max_steps or 5
+
+		if not self.browser:
+			raise ValueError("Browser instance required for agent-based steps")
 
 		agent = Agent(
 			task=task,
@@ -535,9 +719,23 @@ class Workflow:
 		# print(self.browser.agent_current_page)
 		self.browser.agent_current_page = None
 		# print(self.browser.browser_pid)
-		self.browser.browser_pid = None
-
-		await self.browser.start()
+		
+		# Check if browser is already started to avoid double-start
+		browser_already_started = (
+			hasattr(self.browser, 'browser_pid') and 
+			self.browser.browser_pid is not None and
+			hasattr(self.browser, 'browser') and
+			self.browser.browser is not None
+		)
+		
+		if not browser_already_started:
+			print(f"[Workflow] Starting browser (browser_pid: {getattr(self.browser, 'browser_pid', 'None')}, browser: {getattr(self.browser, 'browser', 'None')})")
+			await self.browser.start()
+		else:
+			print(f"[Workflow] Browser already started with PID {self.browser.browser_pid}, skipping start()")
+		
+		# Store browser reference to prevent it from being garbage collected
+		self._browser_ref = self.browser
 		try:
 			for step_index, step_dict in enumerate(self.steps):  # self.steps now holds dictionaries
 				await asyncio.sleep(0.1)
