@@ -10,6 +10,7 @@ from backend.routers import get_service, local_wf_router, db_wf_router
 from backend.dependencies import validate_session_token
 from fastapi import APIRouter
 
+# TODO: change the name to auth
 # Create auth router
 auth_router = APIRouter(prefix='/auth')
 
