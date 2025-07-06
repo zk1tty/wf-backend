@@ -67,12 +67,41 @@ class WorkflowController(Controller):
 		# Navigate to URL ------------------------------------------------------------
 		@self.registry.action('Manually navigate to URL', param_model=NavigationAction)
 		async def navigation(params: NavigationAction, browser_session: Browser) -> ActionResult:
-			"""Navigate to the given URL."""
+			"""Navigate to the given URL with explicit rrweb re-injection support."""
 			page = await browser_session.get_current_page()
-			await page.goto(params.url)
-			await page.wait_for_load_state()
+			
+			# Navigate to the URL
+			logger.info(f"🔗 Navigating to: {params.url}")
+			await page.goto(params.url, timeout=30000)
+			
+			# FIXED: Use domcontentloaded instead of networkidle for dynamic sites like Amazon
+			try:
+				await page.wait_for_load_state('domcontentloaded', timeout=10000)
+				# Additional wait for dynamic content without networkidle
+				await asyncio.sleep(3)
+			except Exception as e:
+				logger.warning(f"Load state wait failed: {e}, continuing anyway")
+			
+			# NEW: Check if RRWebRecorder is attached and perform explicit re-injection
+			rrweb_recorder = getattr(browser_session, '_rrweb_recorder', None)
+			
+			if rrweb_recorder and hasattr(rrweb_recorder, 'reinject_after_navigation'):
+				logger.info(f"🎬 Performing explicit rrweb re-injection after navigation to: {params.url}")
+				try:
+					success = await rrweb_recorder.reinject_after_navigation(params.url)
+					if success:
+						msg = f'🔗 Navigated to URL with rrweb re-injection: {params.url}'
+						logger.info(f"✅ rrweb re-injection successful for: {params.url}")
+					else:
+						msg = f'🔗 Navigated to URL (rrweb re-injection failed): {params.url}'
+						logger.warning(f"⚠️ rrweb re-injection failed for: {params.url}")
+				except Exception as e:
+					msg = f'🔗 Navigated to URL (rrweb re-injection error): {params.url}'
+					logger.error(f"❌ rrweb re-injection error for {params.url}: {e}")
+			else:
+				# Standard navigation without rrweb
+				msg = f'🔗 Navigated to URL: {params.url}'
 
-			msg = f'🔗  Navigated to URL: {params.url}'
 			logger.info(msg)
 			return ActionResult(extracted_content=msg, include_in_memory=True)
 

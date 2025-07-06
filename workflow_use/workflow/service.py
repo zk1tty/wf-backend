@@ -34,10 +34,11 @@ from workflow_use.schema.views import (
 from workflow_use.workflow.prompts import STRUCTURED_OUTPUT_PROMPT, WORKFLOW_FALLBACK_PROMPT_TEMPLATE
 from workflow_use.workflow.views import WorkflowRunOutput
 
-# Import visual streaming components
+# Import new architecture components
 try:
-	from workflow_use.browser.visual_browser import VisualWorkflowBrowser
-	from backend.visual_streaming import streaming_manager
+	from workflow_use.browser.browser_factory import browser_factory
+	from workflow_use.rrweb.recorder import RRWebRecorder
+	from backend.visual_streaming import streaming_manager  # Uses compatibility layer
 	VISUAL_STREAMING_AVAILABLE = True
 except ImportError:
 	VISUAL_STREAMING_AVAILABLE = False
@@ -90,11 +91,11 @@ class Workflow:
 
 		self.controller = controller or WorkflowController()
 
-		# NEW: Visual streaming setup
+		# NEW: Visual streaming setup with new architecture
 		self.visual_streaming = visual_streaming and VISUAL_STREAMING_AVAILABLE
 		self.session_id = session_id
 		self.event_callback = event_callback
-		self.visual_browser: Optional[VisualWorkflowBrowser] = None
+		self.rrweb_recorder: Optional[RRWebRecorder] = None
 		
 		if self.visual_streaming and not session_id:
 			raise ValueError("session_id is required when visual_streaming=True")
@@ -103,36 +104,29 @@ class Workflow:
 			logger.warning("Visual streaming requested but components not available, disabling...")
 			self.visual_streaming = False
 
-		# Only initialize visual browser if visual streaming is enabled
-		if visual_streaming and session_id:
-			from workflow_use.browser.visual_browser import VisualWorkflowBrowser
-			self.visual_browser = VisualWorkflowBrowser(
-				session_id=session_id,  # type: ignore - already validated above
-				event_callback=self._create_streaming_callback()
-			)
-			# The visual browser will create its own Browser instance
-			self.browser = None  # Will be set after visual browser creates it
+		# Browser and recorder setup using new architecture
+		if self.visual_streaming and session_id:
+			# Will be created in _setup_visual_browser using BrowserFactory
+			self.browser = None
+			self.rrweb_recorder = None
 		else:
+			# Traditional browser creation for non-visual workflows
 			self.browser = browser or Browser()
 
 		# Only set keep_alive=True if it's not already explicitly configured
-		# This preserves the keep_alive setting from our BrowserProfile configuration
 		if self.browser and (not hasattr(self.browser.browser_profile, 'keep_alive') or self.browser.browser_profile.keep_alive is None):
-			# Hack to not close it after agent kicks in (fallback for default browsers)
 			self.browser.browser_profile.keep_alive = True
 
 		self.llm = llm
 		self.page_extraction_llm = page_extraction_llm
-
 		self.fallback_to_agent = fallback_to_agent
-
 		self.context: dict[str, Any] = {}
 
 		self.inputs_def: List[WorkflowInputSchemaDefinition] = self.schema.input_schema
 		self._input_model: type[BaseModel] = self._build_input_model()
 
 	def _create_streaming_callback(self) -> Optional[Callable]:
-		"""Create streaming callback that feeds events to the streaming system"""
+		"""Create streaming callback that feeds events to the new streaming system"""
 		if not self.visual_streaming or not self.session_id:
 			return None
 			
@@ -142,7 +136,7 @@ class Workflow:
 					# Call user-provided callback first
 					await self.event_callback(event)
 				
-				# Feed into streaming system
+				# Feed into new streaming system
 				if self.session_id:  # Type guard
 					streamer = streaming_manager.get_or_create_streamer(self.session_id)
 					await streamer.process_rrweb_event(event.get('event', {}))
@@ -154,22 +148,45 @@ class Workflow:
 		return streaming_callback
 
 	async def _setup_visual_browser(self, headless: bool = True) -> Browser:
-		"""Setup visual browser for streaming"""
-		if not self.visual_browser:
-			raise RuntimeError("Visual browser not initialized")
+		"""Setup visual browser using new BrowserFactory + RRWebRecorder architecture"""
+		if not self.session_id:
+			raise RuntimeError("Session ID required for visual browser setup")
 		
-		# Create browser instance
-		browser = await self.visual_browser.create_browser(headless=headless)
+		logger.info(f"🔧 Setting up visual browser using new architecture for session {self.session_id}")
 		
-		# Inject rrweb for visual recording
-		injection_success = await self.visual_browser.inject_rrweb()
-		if injection_success:
-			await self.visual_browser.start_recording()
-			logger.info(f"Visual streaming started for session {self.session_id}")
-		else:
-			logger.warning(f"Failed to start visual recording for session {self.session_id}")
-		
-		return browser
+		try:
+			# Create browser and recorder using BrowserFactory
+			browser, recorder = await browser_factory.create_browser_with_rrweb(
+				mode='visual',
+				session_id=self.session_id,
+				event_callback=self._create_streaming_callback(),
+				headless=headless
+			)
+			
+			# Store references
+			self.browser = browser
+			self.rrweb_recorder = recorder
+			
+			# Attach recorder to browser for controller access
+			browser._rrweb_recorder = recorder  # type: ignore
+			
+			# Start recording
+			recording_success = await recorder.start_recording()
+			if recording_success:
+				logger.info(f"✅ Visual streaming started for session {self.session_id}")
+				
+				# Mark streaming as ready
+				streamer = streaming_manager.get_or_create_streamer(self.session_id)
+				await streamer.transition_to_ready()
+				await streamer.start_streaming()
+			else:
+				logger.warning(f"⚠️ Failed to start visual recording for session {self.session_id}")
+			
+			return browser
+			
+		except Exception as e:
+			logger.error(f"❌ Failed to setup visual browser for session {self.session_id}: {e}")
+			raise RuntimeError(f"Visual browser setup failed: {e}")
 
 	async def execute_with_visual_streaming(
 		self,
@@ -179,7 +196,7 @@ class Workflow:
 		output_model: type[T] | None = None,
 		headless: bool = True,
 	) -> WorkflowRunOutput[T]:
-		"""Enhanced workflow execution with visual streaming support"""
+		"""Enhanced workflow execution with visual streaming support using new architecture"""
 		if not self.visual_streaming:
 			# Fallback to regular execution
 			return await self.run(inputs, close_browser_at_end, cancel_event, output_model)
@@ -187,50 +204,73 @@ class Workflow:
 		logger.info(f"▶️ Starting workflow execution with visual streaming for session {self.session_id}")
 		
 		try:
-			# Setup visual browser
+			# Setup visual browser using new architecture
 			self.browser = await self._setup_visual_browser(headless=headless)
+			
+			# Transition to executing phase
+			if self.session_id:
+				streamer = streaming_manager.get_streamer(self.session_id)
+				if streamer:
+					await streamer.transition_to_executing()
 			
 			# Execute workflow with visual feedback
 			result = await self.run(inputs, close_browser_at_end, cancel_event, output_model)
 			
-			logger.info(f"Workflow execution completed with visual streaming for session {self.session_id}")
+			# Transition to completed phase
+			if self.session_id:
+				streamer = streaming_manager.get_streamer(self.session_id)
+				if streamer:
+					await streamer.transition_to_completed()
+			
+			logger.info(f"✅ Workflow execution completed with visual streaming for session {self.session_id}")
 			return result
 			
 		except Exception as e:
-			logger.error(f"Error in visual workflow execution: {e}")
+			logger.error(f"❌ Error in visual workflow execution: {e}")
 			raise
 		finally:
-			# Cleanup visual browser if needed
-			if close_browser_at_end and self.visual_browser:
-				await self.visual_browser.cleanup()
+			# Cleanup using new architecture
+			if close_browser_at_end:
+				await self._cleanup_visual_resources()
+
+	async def _cleanup_visual_resources(self) -> None:
+		"""Clean up visual resources using new architecture"""
+		try:
+			if self.session_id:
+				# Transition to cleanup phase
+				streamer = streaming_manager.get_streamer(self.session_id)
+				if streamer:
+					await streamer.transition_to_cleanup()
+				
+				# Stop recorder
+				if self.rrweb_recorder:
+					await self.rrweb_recorder.stop_recording()
+					logger.info(f"🛑 RRWeb recording stopped for session {self.session_id}")
+				
+				# Clean up browser using factory
+				await browser_factory.cleanup_session(self.session_id)
+				logger.info(f"🧹 Browser factory cleaned up session {self.session_id}")
+				
+				# Final streaming cleanup
+				if streamer:
+					await streamer.graceful_shutdown()
+					await streaming_manager.remove_streamer(self.session_id)
+					logger.info(f"🧹 Streaming cleaned up for session {self.session_id}")
+				
+		except Exception as e:
+			logger.error(f"❌ Error during visual resources cleanup: {e}")
 
 	async def _execute_step_with_visual_feedback(
 		self, 
 		step_index: int, 
 		step_resolved: WorkflowStep
 	) -> ActionResult | AgentHistoryList:
-		"""Execute step with enhanced visual feedback"""
+		"""Execute step with enhanced visual feedback using new architecture"""
 		# Send step start event if visual streaming is enabled
-		if self.visual_streaming and self.visual_browser:
+		if self.visual_streaming and self.rrweb_recorder:
 			try:
-				# Send custom event about step start
-				step_start_event = {
-					'type': 5,  # Custom event type
-					'data': {
-						'tag': 'workflow_step',
-						'payload': {
-							'action': 'step_start',
-							'step_index': step_index,
-							'step_type': step_resolved.type,
-							'step_description': step_resolved.description or '',
-							'total_steps': len(self.steps)
-						}
-					},
-					'timestamp': asyncio.get_event_loop().time() * 1000
-				}
-				
-				await self.visual_browser._handle_rrweb_event(json.dumps(step_start_event))
-				logger.debug(f"Sent step start event for step {step_index + 1}")
+				# TODO: Could send custom events through the recorder
+				logger.debug(f"📍 Starting step {step_index + 1}: {step_resolved.type}")
 				
 			except Exception as e:
 				logger.warning(f"Failed to send step start event: {e}")
@@ -239,25 +279,9 @@ class Workflow:
 		result = await self._execute_step(step_index, step_resolved)
 		
 		# Send step completion event if visual streaming is enabled
-		if self.visual_streaming and self.visual_browser:
+		if self.visual_streaming and self.rrweb_recorder:
 			try:
-				step_end_event = {
-					'type': 5,  # Custom event type
-					'data': {
-						'tag': 'workflow_step',
-						'payload': {
-							'action': 'step_complete',
-							'step_index': step_index,
-							'step_type': step_resolved.type,
-							'success': isinstance(result, ActionResult) and result.success if isinstance(result, ActionResult) else result.is_successful(),
-							'total_steps': len(self.steps)
-						}
-					},
-					'timestamp': asyncio.get_event_loop().time() * 1000
-				}
-				
-				await self.visual_browser._handle_rrweb_event(json.dumps(step_end_event))
-				logger.debug(f"Sent step completion event for step {step_index + 1}")
+				logger.debug(f"✅ Completed step {step_index + 1}: {step_resolved.type}")
 				
 			except Exception as e:
 				logger.warning(f"Failed to send step completion event: {e}")
@@ -306,6 +330,8 @@ class Workflow:
 		action_model = ActionModel(**{action_name: params})
 
 		try:
+			if not self.browser:
+				raise RuntimeError("Browser not initialized for deterministic action")
 			result = await self.controller.act(action_model, self.browser, page_extraction_llm=self.page_extraction_llm)
 		except Exception as e:
 			raise RuntimeError(f"Deterministic action '{action_name}' failed: {str(e)}")
@@ -320,7 +346,7 @@ class Workflow:
 			next_step = self.steps[current_index + 1]
 			next_step_resolved = self._resolve_placeholders(next_step)
 			css_selector = getattr(next_step_resolved, 'cssSelector', None)
-			if css_selector:
+			if css_selector and self.browser:
 				try:
 					await self.browser._wait_for_stable_network()
 					page = await self.browser.get_current_page()
@@ -661,6 +687,9 @@ class Workflow:
 		if not (0 <= step_index < len(self.steps)):
 			raise IndexError(f'step_index {step_index} is out of range for workflow with {len(self.steps)} steps')
 
+		if not self.browser:
+			raise RuntimeError("Browser not initialized for step execution")
+
 		# Initialise/augment context once with the provided inputs
 		if inputs is not None or not self.context:
 			runtime_inputs = inputs or {}
@@ -712,6 +741,10 @@ class Workflow:
 		self.context = runtime_inputs.copy()  # Start with a fresh context
 
 		results: List[ActionResult | AgentHistoryList] = []
+
+		# Ensure browser is initialized
+		if not self.browser:
+			raise RuntimeError("Browser not initialized for workflow execution")
 
 		logger.debug(f'Current event loop type: {type(asyncio.get_event_loop())}')
 
@@ -767,7 +800,7 @@ class Workflow:
 
 		finally:
 			# Clean-up browser after finishing workflow
-			if close_browser_at_end:
+			if close_browser_at_end and self.browser:
 				self.browser.browser_profile.keep_alive = False
 				await self.browser.close()
 
