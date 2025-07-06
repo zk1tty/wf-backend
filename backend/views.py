@@ -167,12 +167,13 @@ class VisualStreamingStatusResponse(BaseModel):
 
 
 class VisualStreamingEventResponse(BaseModel):
-	"""Response model for individual rrweb events"""
+	"""Response model for individual rrweb events (FIXED FORMAT)"""
 	session_id: str
-	event_type: int  # rrweb event type
 	timestamp: float
-	event_data: Dict[str, Any]
+	event: Dict[str, Any]  # FIXED: rrweb event object (was event_data)
+	sequence_id: int = 0
 	metadata: Optional[Dict[str, Any]] = None
+	# REMOVED: event_type (redundant with event.type)
 
 
 # New models for async processing

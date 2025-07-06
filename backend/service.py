@@ -16,10 +16,13 @@ from browser_use.controller.service import Controller
 from langchain_openai import ChatOpenAI
 from supabase import Client
 import aiofiles
+import psutil
+import subprocess
 
 from workflow_use.controller.service import WorkflowController
 from workflow_use.recorder.service import RecordingService
 from workflow_use.workflow.service import Workflow
+from workflow_use.builder.service import BuilderService
 
 from .dependencies import supabase
 from .execution_history_service import get_execution_history_service
@@ -55,11 +58,9 @@ class WorkflowService:
 	def __init__(self, supabase_client: Client, app=None) -> None:
 		self.supabase = supabase_client
 		
-		# Patch the browser-use screensaver with rebrowse logo
-		patch_browser_use_screensaver(
-			logo_url=None,  # Will auto-detect rebrowse.png
-			logo_text="rebrowse"  # Fallback text if logo not found
-		)
+		# NOTE: Screensaver now implemented on frontend to avoid JavaScript conflicts
+		# Frontend shows CSS screensaver until rrweb replayer takes over
+		# This eliminates browser-side JavaScript conflicts with rrweb recording
 		
 		# ---------- Core resources to fetch from local storage ----------
 		self.tmp_dir: Path = Path('./tmp')
@@ -89,23 +90,63 @@ class WorkflowService:
 		try:
 			import shutil
 			import os
+			import subprocess
+			import psutil
 			
 			if not profile_path:
 				# Default browser profile path
 				profile_path = os.path.expanduser("~/.config/browseruse/profiles/default")
 			
+			# AGGRESSIVE CLEANUP: Kill any running chromium/browser processes first
+			try:
+				# Find and kill any chromium processes using the profile directory
+				for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+					try:
+						if proc.info['name'] and 'chromium' in proc.info['name'].lower():
+							if proc.info['cmdline'] and any(profile_path in arg for arg in proc.info['cmdline']):
+								logger.warning(f"Killing chromium process {proc.info['pid']} using profile {profile_path}")
+								proc.kill()
+								proc.wait(timeout=3)  # Wait up to 3 seconds for process to die
+					except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+						continue
+			except ImportError:
+				# psutil not available, try alternative approach
+				try:
+					# Kill any chromium processes (less precise but works)
+					subprocess.run(['pkill', '-f', 'chromium'], check=False, capture_output=True)
+					subprocess.run(['pkill', '-f', 'chrome'], check=False, capture_output=True)
+				except (subprocess.SubprocessError, FileNotFoundError):
+					pass
+			
+			# Wait a moment for processes to fully terminate
+			import time
+			time.sleep(1)
+			
 			if os.path.exists(profile_path):
-				# Check for SingletonLock file specifically
-				singleton_lock = os.path.join(profile_path, "SingletonLock")
-				if os.path.exists(singleton_lock):
-					logger.warning(f"Found existing SingletonLock at {singleton_lock}, cleaning up profile...")
-					shutil.rmtree(profile_path)
-					logger.info(f"Cleaned up browser profile at {profile_path}")
+				# Force remove the entire profile directory
+				logger.warning(f"Force removing browser profile directory: {profile_path}")
+				try:
+					# Try to remove read-only files as well
+					def handle_remove_readonly(func, path, exc):
+						os.chmod(path, 0o777)
+						func(path)
+					
+					shutil.rmtree(profile_path, onerror=handle_remove_readonly)
+					logger.info(f"Successfully cleaned up browser profile at {profile_path}")
 					return True
+				except Exception as e:
+					logger.error(f"Failed to remove profile directory {profile_path}: {e}")
+					# Try alternative cleanup
+					try:
+						subprocess.run(['rm', '-rf', profile_path], check=False, capture_output=True)
+						logger.info(f"Alternative cleanup successful for {profile_path}")
+						return True
+					except:
+						pass
 			
 			return False
 		except Exception as e:
-			logger.error(f"Error cleaning up browser profile: {e}")
+			logger.error(f"Error in aggressive browser profile cleanup: {e}")
 			return False
 
 	def _create_browser_instance(self, mode: str = "auto") -> Browser:
@@ -156,7 +197,7 @@ class WorkflowService:
 				print("[WorkflowService] Searched paths:", playwright_chromium_paths)
 				print("[WorkflowService] Make sure 'playwright install chromium' was run")
 			
-			# Base arguments for cloud execution
+			# Optimized arguments for cloud execution with better navigation support
 			base_args = [
 					'--no-sandbox',  # Required for Docker/Railway
 					'--disable-dev-shm-usage',  # Overcome limited resource problems
@@ -165,27 +206,37 @@ class WorkflowService:
 					'--disable-background-timer-throttling',  # Disable background throttling
 					'--disable-backgrounding-occluded-windows',
 					'--disable-renderer-backgrounding',
-					'--disable-field-trial-config',
-					'--disable-ipc-flooding-protection',
-					'--disable-extensions',  # Disable extensions
-					'--disable-plugins',  # Disable plugins
-					'--disable-default-apps',  # Disable default apps
-					'--disable-sync',  # Disable sync
+					'--disable-extensions',  # Disable extensions for security
 					'--no-first-run',  # Skip first run setup
 					'--no-default-browser-check',  # Skip default browser check
+					'--disable-default-apps',  # Disable default apps
+					'--disable-component-update',  # Disable component updates
 					'--disable-background-networking',  # Disable background networking
-					'--memory-pressure-off',  # Disable memory pressure
+					'--disable-sync',  # Disable sync
+					'--metrics-recording-only',  # Disable metrics uploading
+					'--no-report-upload',  # Don't upload crash reports
+					'--disable-breakpad',  # Disable crash reporting
+					# Network and navigation improvements
+					'--aggressive-cache-discard',  # Better memory management
+					'--enable-automation',  # Enable automation features
+					'--disable-blink-features=AutomationControlled',  # Hide automation detection
+					'--disable-client-side-phishing-detection',  # Disable phishing detection that can block navigation
+					'--disable-features=TranslateUI',  # Disable translate UI
+					'--disable-ipc-flooding-protection',  # Allow more IPC messages
 					'--max_old_space_size=4096',  # Increase memory limit
 			]
 			
-			# Standard headless configuration
+			# Standard headless configuration with better navigation support
 			profile = BrowserProfile(
 				headless=True,  # Run without GUI
 				disable_security=True,
 				keep_alive=False,  # Cloud-run mode: browser will be closed after use
 				args=base_args + [
 					'--disable-gpu',  # Disable GPU hardware acceleration for headless
-					'--single-process',  # Use single process (saves memory)
+					# REMOVED: --single-process (can cause navigation issues)
+					'--disable-software-rasterizer',  # Disable software rasterizer
+					'--run-all-compositor-stages-before-draw',  # Better rendering
+					'--disable-threaded-animation',  # Disable threaded animation
 				]
 			)
 			
@@ -224,23 +275,32 @@ class WorkflowService:
 			else:
 				print("[WorkflowService] WARNING: No local Chromium found, falling back to default")
 				print("[WorkflowService] Make sure to install Chrome or Chromium browser")
-				
-				# Local configuration with GUI enabled
-				base_local_args = [
-					'--disable-web-security',  # Disable web security for automation
-					'--no-first-run',  # Skip first run setup
-					'--disable-default-browser-check',  # Skip default browser check
-					# Note: Remove --no-sandbox and other container-specific flags for local use
-				]
-				
-				profile = BrowserProfile(
-					headless=False,  # Enable GUI for local development
-					disable_security=True,  # Still disable security for automation
-					keep_alive=True,  # Local-run mode: keep browser alive for development
-					args=base_local_args
-				)
-				
-				return Browser(browser_profile=profile)
+			
+			# Local configuration with GUI enabled and better navigation support
+			base_local_args = [
+				'--disable-web-security',  # Disable web security for automation
+				'--no-first-run',  # Skip first run setup
+				'--disable-default-browser-check',  # Skip default browser check
+				'--disable-extensions',  # Disable extensions for consistency
+				'--enable-automation',  # Enable automation features
+				'--disable-blink-features=AutomationControlled',  # Hide automation detection
+				'--disable-client-side-phishing-detection',  # Disable phishing detection
+				'--disable-features=TranslateUI',  # Disable translate UI
+				'--disable-background-networking',  # Disable background networking
+				'--disable-sync',  # Disable sync
+				'--no-default-browser-check',  # Skip default browser check
+				'--disable-component-update',  # Disable component updates
+				# Note: Keep --no-sandbox and other container-specific flags out for local use
+			]
+			
+			profile = BrowserProfile(
+				headless=False,  # Enable GUI for local development
+				disable_security=True,  # Still disable security for automation
+				keep_alive=True,  # Local-run mode: keep browser alive for development
+				args=base_local_args
+			)
+			
+			return Browser(browser_profile=profile)
 		
 		else:
 			raise ValueError(f"Invalid browser mode: {mode}. Must be 'cloud-run', 'local-run', or 'auto'")
@@ -564,319 +624,6 @@ class WorkflowService:
 				except Exception as e:
 					await self._write_error_log(log_file, f'Error closing browser: {e}')
 
-	# NEW: Enhanced workflow execution with visual streaming support
-	async def run_workflow_with_visual_streaming(
-		self,
-		task_id: str,
-		request: WorkflowExecuteRequest,
-		cancel_event: asyncio.Event,
-		visual_streaming: bool = False,
-		session_id: Optional[str] = None,
-		visual_quality: str = "standard",
-		visual_events_buffer: int = 1000,
-	) -> None:
-		"""Run workflow with enhanced visual streaming support using rrweb."""
-		log_file = self.log_dir / f'task_{task_id}.log'
-		temp_file = None
-		execution_start_time = time.time()
-		
-		# 🔧 CRITICAL FIX: Create visual streaming session IMMEDIATELY to avoid "Session not found" errors
-		if visual_streaming and session_id:
-			try:
-				from backend.visual_streaming import streaming_manager
-				# Create the session immediately so frontend polling works
-				streamer = streaming_manager.get_or_create_streamer(session_id)
-				await streamer.start_streaming()
-				await self._write_log(log_file, f'[{self._get_timestamp()}] Visual streaming session created early for frontend polling: {session_id}\n')
-			except Exception as e:
-				await self._write_warning_log(log_file, f'Failed to create early visual streaming session: {e}')
-		
-		try:
-			# Initialize task info with visual streaming fields
-			task_info = TaskInfo(
-				status='running',
-				workflow=request.name,
-				result=None,
-				error=None,
-			)
-			
-			# Add visual streaming URLs if enabled
-			if visual_streaming and session_id:
-				task_info.visual_stream_url = f"/workflows/visual/{session_id}/stream"
-				task_info.viewer_url = f"/workflows/visual/{session_id}/viewer"
-			
-			self.active_tasks[task_id] = task_info
-
-			await self._write_log(log_file, f'[{self._get_timestamp()}] Starting enhanced workflow execution: {request.name}\n')
-			await self._write_log(log_file, f'[{self._get_timestamp()}] Mode: {request.mode}\n')
-			await self._write_log(log_file, f'[{self._get_timestamp()}] Visual feedback: {request.visual}\n')
-			await self._write_log(log_file, f'[{self._get_timestamp()}] Visual streaming: {visual_streaming}\n')
-			await self._write_log(log_file, f'[{self._get_timestamp()}] Session ID: {session_id}\n')
-			await self._write_log(log_file, f'[{self._get_timestamp()}] Visual quality: {visual_quality}\n')
-
-			# Load workflow from file
-			workflow_path = self.tmp_dir / request.name
-			if not workflow_path.exists():
-				raise FileNotFoundError(f'Workflow file not found: {request.name}')
-
-			workflow_content = json.loads(workflow_path.read_text())
-			
-			# Create temporary workflow file for processing
-			temp_file = self.tmp_dir / f"temp_workflow_{task_id}.json"
-			temp_file.write_text(json.dumps(workflow_content))
-
-			# Create browser instance for workflow execution
-			browser = None
-			browser_for_workflow = None
-			
-			# Initialize visual streaming if enabled
-			visual_events_captured = 0
-			visual_stream_start_time = time.time()
-			visual_browser = None  # Store visual browser reference for cleanup
-			
-			if visual_streaming and session_id:
-				try:
-					# Import visual streaming components
-					from backend.visual_streaming import streaming_manager
-					
-					# Get or create streamer for session
-					streamer = streaming_manager.get_or_create_streamer(session_id)
-					await streamer.start_streaming()
-					await self._write_log(log_file, f'[{self._get_timestamp()}] Visual streaming initialized for session: {session_id}\n')
-					
-					# 🔧 NEW APPROACH: Create workflow browser first, then wrap with visual capabilities
-					await self._write_log(log_file, f'[{self._get_timestamp()}] Creating workflow browser for visual streaming session: {session_id}\n')
-					
-					# Create the regular workflow browser instance first
-					browser = self._create_browser_instance(mode=request.mode)
-					await browser.start()
-					await self._write_log(log_file, f'[{self._get_timestamp()}] Workflow browser created and started\n')
-					
-					# Now create VisualWorkflowBrowser using the existing browser instance
-					from workflow_use.browser.visual_browser import VisualWorkflowBrowser
-					
-					# Create streaming callback that feeds into our streaming system
-					async def streaming_callback(event_data):
-						nonlocal visual_events_captured
-						try:
-							if isinstance(event_data, dict) and 'event' in event_data:
-								await streamer.process_rrweb_event(event_data['event'])
-							else:
-								await streamer.process_rrweb_event(event_data)
-							visual_events_captured += 1
-						except Exception as e:
-							await self._write_error_log(log_file, f'Error in streaming callback: {e}')
-					
-					# Create visual browser wrapper using the existing browser
-					visual_browser = VisualWorkflowBrowser(
-						session_id=session_id,
-						event_callback=streaming_callback,
-						browser=browser  # Pass the existing browser instance
-					)
-					
-					await self._write_log(log_file, f'[{self._get_timestamp()}] VisualWorkflowBrowser created with existing browser for session: {session_id}\n')
-					
-					# Initialize the visual browser (will use existing browser, not create new one)
-					rrweb_browser = await visual_browser.create_browser(headless=True)
-					await self._write_log(log_file, f'[{self._get_timestamp()}] Visual browser initialized successfully\n')
-					
-					# Inject rrweb on the current page (whatever page the browser is on)
-					await self._write_log(log_file, f'[{self._get_timestamp()}] Injecting rrweb on current page...\n')
-					injection_success = await visual_browser.inject_rrweb()
-					
-					if injection_success:
-						await self._write_log(log_file, f'[{self._get_timestamp()}] ✅ rrweb injected successfully\n')
-						
-						# Start recording
-						await visual_browser.start_recording()
-						await self._write_log(log_file, f'[{self._get_timestamp()}] ✅ rrweb recording started\n')
-						
-						# 🔧 PHASE MANAGEMENT: Transition to READY phase (rrweb recording started)
-						await streamer.transition_to_ready()
-						await self._write_log(log_file, f'[{self._get_timestamp()}] 🔄 Phase transition: SETUP → READY\n')
-						
-						# 🔧 Use the browser instance for workflow execution
-						browser_for_workflow = browser
-						await self._write_log(log_file, f'[{self._get_timestamp()}] ✅ Using browser with rrweb capabilities for workflow execution\n')
-						
-						# Wait briefly for recording to stabilize
-						await asyncio.sleep(0.5)
-						
-					else:
-						await self._write_error_log(log_file, f'Failed to inject rrweb, using browser without visual streaming')
-						# Continue with the browser we created
-						browser_for_workflow = browser
-					
-				except ImportError as e:
-					await self._write_warning_log(log_file, f'Visual streaming components not available: {e}')
-					# Fallback: create regular browser
-					browser = self._create_browser_instance(mode=request.mode)
-					await browser.start()
-					browser_for_workflow = browser
-				except Exception as e:
-					await self._write_error_log(log_file, f'Error initializing visual streaming: {e}')
-					await self._write_error_log(log_file, f'Traceback: {str(e)}')
-					# Fallback: create regular browser
-					browser = self._create_browser_instance(mode=request.mode)
-					await browser.start()
-					browser_for_workflow = browser
-			else:
-				# No visual streaming: create regular browser
-				browser = self._create_browser_instance(mode=request.mode)
-				await self._write_log(log_file, f'[{self._get_timestamp()}] Browser instance created in {request.mode} mode\n')
-				await browser.start()
-				await self._write_log(log_file, f'[{self._get_timestamp()}] Browser started successfully\n')
-				browser_for_workflow = browser
-
-			# Execute workflow
-			await self._write_log(log_file, f'[{self._get_timestamp()}] ▶️Starting workflow execution...\n')
-			
-			# 🔧 PHASE MANAGEMENT: Transition to EXECUTING phase (workflow execution starting)
-			if visual_streaming and session_id:
-				try:
-					from backend.visual_streaming import streaming_manager
-					streamer = streaming_manager.get_streamer(session_id)
-					if streamer:
-						await streamer.transition_to_executing()
-						await self._write_log(log_file, f'[{self._get_timestamp()}] 🔄 Phase transition: READY → EXECUTING\n')
-				except Exception as e:
-					await self._write_warning_log(log_file, f'Failed to transition to executing phase: {e}')
-			
-			# Load workflow using the correct method
-			workflow = Workflow.load_from_file(
-				str(temp_file),
-				browser=browser_for_workflow,
-				llm=self.llm_instance
-			)
-			
-			# Check for cancellation before execution
-			if cancel_event.is_set():
-				await self._write_log(log_file, f'[{self._get_timestamp()}] Workflow cancelled before execution start\n')
-				self.active_tasks[task_id].status = 'cancelled'
-				return
-
-			# Execute the workflow with the appropriate browser
-			# CRITICAL FIX: Don't close browser at end if visual streaming is enabled
-			close_browser_at_end = not visual_streaming  # Keep browser alive for visual streaming cleanup
-			result = await workflow.run(request.inputs, close_browser_at_end=close_browser_at_end)
-			
-			# 🔧 PHASE MANAGEMENT: Transition to COMPLETED phase (workflow execution finished)
-			if visual_streaming and session_id:
-				try:
-					from backend.visual_streaming import streaming_manager
-					streamer = streaming_manager.get_streamer(session_id)
-					if streamer:
-						await streamer.transition_to_completed()
-						await self._write_log(log_file, f'[{self._get_timestamp()}] 🔄 Phase transition: EXECUTING → COMPLETED\n')
-				except Exception as e:
-					await self._write_warning_log(log_file, f'Failed to transition to completed phase: {e}')
-			
-			# Calculate execution metrics
-			execution_end_time = time.time()
-			execution_time_seconds = execution_end_time - execution_start_time
-			visual_stream_duration = execution_end_time - visual_stream_start_time if visual_streaming else None
-			
-			await self._write_log(log_file, f'[{self._get_timestamp()}] Workflow execution completed successfully\n')
-			await self._write_log(log_file, f'[{self._get_timestamp()}] Execution time: {execution_time_seconds:.2f} seconds\n')
-			if visual_streaming:
-				await self._write_log(log_file, f'[{self._get_timestamp()}] Visual events captured: {visual_events_captured}\n')
-				if visual_stream_duration:
-					await self._write_log(log_file, f'[{self._get_timestamp()}] Visual stream duration: {visual_stream_duration:.2f} seconds\n')
-
-			# Update task status
-			task_info = self.active_tasks[task_id]
-			task_info.status = 'completed'
-			# Convert result to serializable format for TaskInfo
-			if hasattr(result, 'step_results'):
-				task_info.result = [{"step_id": i, "content": str(step)} for i, step in enumerate(result.step_results)]
-			else:
-				task_info.result = [{"step_id": 0, "content": str(result)}]
-
-			await self._write_log(log_file, f'[{self._get_timestamp()}] Workflow completed: {request.name}\n')
-
-		except asyncio.CancelledError:
-			await self._write_log(log_file, f'[{self._get_timestamp()}] Workflow force‑cancelled\n')
-			self.active_tasks[task_id].status = 'cancelled'
-			
-			# Mark browser not ready on cancellation
-			if visual_streaming and session_id:
-				try:
-					from backend.visual_streaming import streaming_manager
-					streamer = streaming_manager.get_streamer(session_id)
-					if streamer:
-						await streamer.mark_browser_not_ready()
-						await self._write_log(log_file, f'[{self._get_timestamp()}] Browser marked as not ready due to cancellation: {session_id}\n')
-				except Exception as e:
-					await self._write_warning_log(log_file, f'Error marking browser not ready on cancellation: {e}')
-			
-			raise
-		except Exception as exc:
-			execution_end_time = time.time()
-			execution_time_seconds = execution_end_time - execution_start_time
-			
-			await self._write_error_log(log_file, f'[{self._get_timestamp()}] Workflow error: {exc}\n')
-			self.active_tasks[task_id].status = 'failed'
-			self.active_tasks[task_id].error = str(exc)
-
-			# Mark browser not ready on error
-			if visual_streaming and session_id:
-				try:
-					from backend.visual_streaming import streaming_manager
-					streamer = streaming_manager.get_streamer(session_id)
-					if streamer:
-						await streamer.mark_browser_not_ready()
-						await self._write_log(log_file, f'[{self._get_timestamp()}] Browser marked as not ready due to error: {session_id}\n')
-				except Exception as mark_error:
-					await self._write_warning_log(log_file, f'Error marking browser not ready on error: {mark_error}\n')
-		finally:
-			# Clean up temporary file
-			if temp_file and temp_file.exists():
-				try:
-					temp_file.unlink()
-					await self._write_log(log_file, f'[{self._get_timestamp()}] Cleaned up temporary file: {temp_file.name}\n')
-				except Exception as e:
-					await self._write_warning_log(log_file, f'Failed to cleanup temp file {temp_file.name}: {e}\n')
-			
-			# Clean up visual streaming if it was initialized
-			if visual_streaming and session_id:
-				try:
-					# Clean up streaming manager FIRST, before browser cleanup
-					from backend.visual_streaming import streaming_manager
-					streamer = streaming_manager.get_streamer(session_id)
-					if streamer:
-						# 🔧 PHASE MANAGEMENT: Transition to CLEANUP phase (browser cleanup starting)
-						await streamer.transition_to_cleanup()
-						await self._write_log(log_file, f'[{self._get_timestamp()}] 🔄 Phase transition: COMPLETED → CLEANUP\n')
-						
-						# Add delay BEFORE cleanup to allow frontend to receive final events
-						await self._write_log(log_file, f'[{self._get_timestamp()}] Keeping session alive for frontend connection: {session_id}\n')
-						await asyncio.sleep(10)  # Give frontend 10 seconds to receive final events
-						
-						# Give additional time for WebSocket to gracefully disconnect
-						await asyncio.sleep(3)
-						
-						# 🔧 FINAL CLEANUP: Now mark browser as not ready and stop streaming
-						await streamer.final_cleanup()
-						await streamer.stop_streaming()
-						await self._write_log(log_file, f'[{self._get_timestamp()}] Visual streaming stopped for session {session_id}\n')
-					
-					# Clean up VisualWorkflowBrowser AFTER streaming cleanup
-					if visual_browser:
-						await self._write_log(log_file, f'[{self._get_timestamp()}] Cleaning up VisualWorkflowBrowser: {session_id}\n')
-						await visual_browser.cleanup()
-						await self._write_log(log_file, f'[{self._get_timestamp()}] VisualWorkflowBrowser cleaned up\n')
-					
-				except Exception as e:
-					await self._write_warning_log(log_file, f'Error stopping visual streaming: {e}\n')
-
-			# Cleanup browser instance (only if it's the regular browser, not the visual browser)
-			if browser and browser != browser_for_workflow:
-				try:
-					await browser.close()
-					await self._write_log(log_file, f'[{self._get_timestamp()}] Regular browser instance closed\n')
-				except Exception as e:
-					await self._write_warning_log(log_file, f'Error closing regular browser: {e}\n')
-
 	async def run_workflow_session_with_visual_streaming(
 		self,
 		task_id: str,
@@ -991,89 +738,76 @@ class WorkflowService:
 			
 			if visual_streaming and session_id:
 				try:
-					# Import visual streaming components
+					# Import new architecture components
 					from backend.visual_streaming import streaming_manager
+					from workflow_use.browser.browser_factory import browser_factory
 					
 					# Get or create streamer for session
 					streamer = streaming_manager.get_or_create_streamer(session_id)
 					await streamer.start_streaming()
 					await self._write_log(log_file, f'[{self._get_timestamp()}] Visual streaming initialized for session: {session_id}\n')
 					
-					# 🔧 NEW APPROACH: Create workflow browser first, then wrap with visual capabilities
-					await self._write_log(log_file, f'[{self._get_timestamp()}] Creating workflow browser for visual streaming session: {session_id}\n')
-					
-					# Create the regular workflow browser instance first
-					browser = self._create_browser_instance(mode=mode)
-					await browser.start()
-					await self._write_log(log_file, f'[{self._get_timestamp()}] Workflow browser created and started\n')
-					
-					# Now create VisualWorkflowBrowser using the existing browser instance
-					from workflow_use.browser.visual_browser import VisualWorkflowBrowser
-					
-					# Create streaming callback that feeds into our streaming system
+					# Create streaming callback that feeds into our streaming system with consistent format handling
 					async def streaming_callback(event_data):
 						nonlocal visual_events_captured
 						try:
+							# FIXED: Consistently handle event format - RRWebRecorder always sends {'event': rrweb_event}
 							if isinstance(event_data, dict) and 'event' in event_data:
-								await streamer.process_rrweb_event(event_data['event'])
+								# Extract the actual rrweb event from the wrapper
+								actual_rrweb_event = event_data['event']
+								await streamer.process_rrweb_event(actual_rrweb_event)
 							else:
+								# Fallback: if raw event data is received (shouldn't happen with new architecture)
+								logger.warning(f"Received raw event data instead of wrapped format: {type(event_data)}")
 								await streamer.process_rrweb_event(event_data)
 							visual_events_captured += 1
 						except Exception as e:
 							await self._write_error_log(log_file, f'Error in streaming callback: {e}')
 					
-					# Create visual browser wrapper using the existing browser
-					visual_browser = VisualWorkflowBrowser(
+					# Create browser + recorder using new architecture
+					await self._write_log(log_file, f'[{self._get_timestamp()}] Creating browser with rrweb using new architecture...\n')
+					browser_for_workflow, rrweb_recorder = await browser_factory.create_browser_with_rrweb(
+						mode='visual',
 						session_id=session_id,
 						event_callback=streaming_callback,
-						browser=browser  # Pass the existing browser instance
+						headless=True
 					)
 					
-					await self._write_log(log_file, f'[{self._get_timestamp()}] VisualWorkflowBrowser created with existing browser for session: {session_id}\n')
+					# Attach recorder to browser for controller access
+					browser_for_workflow._rrweb_recorder = rrweb_recorder
 					
-					# Initialize the visual browser (will use existing browser, not create new one)
-					rrweb_browser = await visual_browser.create_browser(headless=True)
-					await self._write_log(log_file, f'[{self._get_timestamp()}] Visual browser initialized successfully\n')
+					await self._write_log(log_file, f'[{self._get_timestamp()}] ✅ Browser + RRWebRecorder created using new architecture\n')
 					
-					# Inject rrweb on the current page (whatever page the browser is on)
-					await self._write_log(log_file, f'[{self._get_timestamp()}] Injecting rrweb on current page...\n')
-					injection_success = await visual_browser.inject_rrweb()
+					# Start rrweb recording
+					await self._write_log(log_file, f'[{self._get_timestamp()}] Starting rrweb recording...\n')
+					recording_success = await rrweb_recorder.start_recording()
 					
-					if injection_success:
-						await self._write_log(log_file, f'[{self._get_timestamp()}] ✅ rrweb injected successfully\n')
+					if recording_success:
+						await self._write_log(log_file, f'[{self._get_timestamp()}] ✅ rrweb recording started successfully\n')
 						
-						# Start recording
-						await visual_browser.start_recording()
-						await self._write_log(log_file, f'[{self._get_timestamp()}] ✅ rrweb recording started\n')
-						
-						# 🔧 PHASE MANAGEMENT: Transition to READY phase (rrweb recording started)
+						# Phase management: Transition to READY phase
 						await streamer.transition_to_ready()
 						await self._write_log(log_file, f'[{self._get_timestamp()}] 🔄 Phase transition: SETUP → READY\n')
 						
-						# 🔧 Use the browser instance for workflow execution
-						browser_for_workflow = browser
-						await self._write_log(log_file, f'[{self._get_timestamp()}] ✅ Using browser with rrweb capabilities for workflow execution\n')
+						# CRITICAL FIX: Keep navigation monitoring disabled during READY phase
+						# This prevents screensaver recording interruption
+						await rrweb_recorder.set_phase("READY")
+						await self._write_log(log_file, f'[{self._get_timestamp()}] 🔕 Navigation monitoring disabled during READY phase\n')
 						
 						# Wait briefly for recording to stabilize
 						await asyncio.sleep(0.5)
-						
 					else:
-						await self._write_error_log(log_file, f'Failed to inject rrweb, using browser without visual streaming')
-						# Continue with the browser we created
-						browser_for_workflow = browser
+						await self._write_error_log(log_file, f'Failed to start rrweb recording')
+						raise RuntimeError("Failed to start rrweb recording")
 					
 				except ImportError as e:
-					await self._write_warning_log(log_file, f'Visual streaming components not available: {e}')
-					# Fallback: create regular browser
-					browser = self._create_browser_instance(mode=mode)
-					await browser.start()
-					browser_for_workflow = browser
+					error_msg = f'Visual streaming components not available: {e}'
+					await self._write_error_log(log_file, error_msg)
+					raise RuntimeError(f"Visual streaming setup failed: {error_msg}")
 				except Exception as e:
-					await self._write_error_log(log_file, f'Failed to create VisualWorkflowBrowser: {e}')
-					# Fallback: create regular browser
-					browser = self._create_browser_instance(mode=mode)
-					await browser.start()
-					browser_for_workflow = browser
+					error_msg = f'Failed to create visual streaming setup: {e}'
+					await self._write_error_log(log_file, error_msg)
+					raise RuntimeError(f"Visual streaming initialization failed: {error_msg}")
 			else:
 				# No visual streaming: create regular browser
 				browser = self._create_browser_instance(mode=mode)
@@ -1086,6 +820,7 @@ class WorkflowService:
 			await self._write_log(log_file, f'[{self._get_timestamp()}] ▶️Starting workflow execution...\n')
 			
 			# 🔧 PHASE MANAGEMENT: Transition to EXECUTING phase (workflow execution starting)
+			# CRITICAL FIX: Do this ONLY once to prevent duplicate phase transitions
 			if visual_streaming and session_id:
 				try:
 					from backend.visual_streaming import streaming_manager
@@ -1093,8 +828,15 @@ class WorkflowService:
 					if streamer:
 						await streamer.transition_to_executing()
 						await self._write_log(log_file, f'[{self._get_timestamp()}] 🔄 Phase transition: READY → EXECUTING\n')
+						
+						# CRITICAL FIX: Enable navigation monitoring ONLY during actual workflow execution
+						# NOT during screensaver phase to prevent recording restart
+						await rrweb_recorder.set_phase("EXECUTING")
+						await self._write_log(log_file, f'[{self._get_timestamp()}] 🔊 Navigation monitoring enabled for EXECUTING phase\n')
 				except Exception as e:
 					await self._write_warning_log(log_file, f'Failed to transition to executing phase: {e}')
+			
+			# Controller access is already handled via _rrweb_recorder attribute
 			
 			# Load workflow using the correct method
 			from workflow_use.workflow.service import Workflow
@@ -1125,6 +867,10 @@ class WorkflowService:
 					if streamer:
 						await streamer.transition_to_completed()
 						await self._write_log(log_file, f'[{self._get_timestamp()}] 🔄 Phase transition: EXECUTING → COMPLETED\n')
+						
+						# CRITICAL FIX: Disable navigation monitoring after workflow completion
+						await rrweb_recorder.set_phase("COMPLETED")
+						await self._write_log(log_file, f'[{self._get_timestamp()}] 🔕 Navigation monitoring disabled after COMPLETED phase\n')
 				except Exception as e:
 					await self._write_warning_log(log_file, f'Failed to transition to completed phase: {e}')
 			
@@ -1271,11 +1017,7 @@ class WorkflowService:
 						await streamer.stop_streaming()
 						await self._write_log(log_file, f'[{self._get_timestamp()}] Visual streaming stopped for session {session_id}\n')
 					
-					# Clean up VisualWorkflowBrowser AFTER streaming cleanup
-					if visual_browser:
-						await self._write_log(log_file, f'[{self._get_timestamp()}] Cleaning up VisualWorkflowBrowser: {session_id}\n')
-						await visual_browser.cleanup()
-						await self._write_log(log_file, f'[{self._get_timestamp()}] VisualWorkflowBrowser cleaned up\n')
+					# RRWebRecorder cleanup is handled automatically by browser_factory
 					
 				except Exception as e:
 					await self._write_warning_log(log_file, f'Error stopping visual streaming: {e}\n')
@@ -1698,7 +1440,7 @@ async def process_workflow_upload_async(job_id: str, recording_data: dict, user_
 
 async def start_workflow_upload_job(recording_data: dict, user_goal: str, workflow_name: Optional[str] = None, owner_id: Optional[str] = None) -> str:
 	"""Start an async workflow upload job and return job ID."""
-	job_id = str(uuid.uuid4())
+	job_id = str(uuid4())
 	
 	# Initialize job status
 	workflow_jobs[job_id] = WorkflowJobStatus(
