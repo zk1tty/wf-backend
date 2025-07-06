@@ -4,7 +4,7 @@ import uuid
 import time
 import logging
 
-from fastapi import APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect, BackgroundTasks
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -182,6 +182,7 @@ async def execute_workflow_with_visual_streaming(request: VisualWorkflowRequest)
 			visual=False  # Legacy visual support disabled
 		)
 
+		# TODO: replace this method run_workflow_with_visual_streaming with run_workflow_session_with_visual_streaming
 		# Start workflow execution with visual streaming
 		task = asyncio.create_task(
 			service.run_workflow_with_visual_streaming(
@@ -1152,13 +1153,54 @@ async def get_visual_streaming_viewer(session_id: str):
 				let replayer = null;
 				let eventCount = 0;
 				
-				// Initialize rrweb replayer
+				// 🔧 FIX: Enhanced replayer with iframe sandbox handling
 				function initReplayer() {{
 					replayer = new rrweb.Replayer([], {{
 						target: document.getElementById('viewer'),
 						mouseTail: false,
-						useVirtualDom: false
+						useVirtualDom: false,  // Disable virtual DOM to prevent sandbox issues
+						liveMode: true,        // Enable live mode for real-time updates
+						skipInactive: false,   // Don't skip any events
+						speed: 1,              // Normal playback speed
+						blockClass: 'rr-block',
+						ignoreClass: 'rr-ignore',
+						
+						// 🔧 IFRAME SANDBOX FIXES
+						UNSAFE_replayCanvas: true,    // Allow canvas replay despite security
+						unpackFn: rrweb.unpack,      // Ensure proper unpacking
+						
+						// Enhanced CSS handling for Amazon's complex styles
+						insertStyleRules: [
+							'.rr-block {{ visibility: hidden !important; }}',
+							'.rr-ignore {{ pointer-events: none !important; }}',
+							'iframe {{ pointer-events: auto !important; }}',  // Fix iframe interactions
+							'[data-rrweb-id] {{ position: relative !important; }}'  // Ensure element positioning
+						],
+						
+						// 🔧 ERROR HANDLING for sandbox issues
+						onError: function(error) {{
+							console.warn('rrweb replayer warning (continuing):', error);
+							// Don't throw - continue replay despite sandbox errors
+						}},
+						
+						// Custom event processing for better Amazon compatibility
+						plugins: [
+							// Handle Amazon's dynamic content loading
+							{{
+								onBuild: (node, options) => {{
+									if (node.tagName === 'IFRAME') {{
+										// Remove sandbox restrictions for replay
+										node.removeAttribute('sandbox');
+									}}
+									return node;
+								}}
+							}}
+						]
 					}});
+					
+					// Start live mode immediately
+					replayer.startLive();
+					console.log('🎬 Enhanced rrweb replayer initialized with sandbox fixes');
 				}}
 				
 				// Connect to WebSocket
@@ -1172,13 +1214,70 @@ async def get_visual_streaming_viewer(session_id: str):
 					}};
 					
 					ws.onmessage = function(event) {{
-						const data = JSON.parse(event.data);
+						let data;
+						try {{
+							data = JSON.parse(event.data);
+						}} catch (e) {{
+							console.error('❌ Failed to parse WebSocket message:', e);
+							return;
+						}}
 						
+						// 🔧 FIX: Enhanced event processing with fallback handling
+						let rrwebEvent = null;
+						
+						// Primary format: New backend format (should work after our fixes)
 						if (data.event) {{
-							if (!replayer) initReplayer();
-							replayer.addEvent(data.event);
-							eventCount++;
-							document.getElementById('event-count').textContent = eventCount;
+							rrwebEvent = data.event;
+							console.log('✅ Received new format event:', rrwebEvent.type);
+						}}
+						// Fallback format: Legacy event_data format (for backward compatibility)
+						else if (data.event_data) {{
+							rrwebEvent = data.event_data;
+							console.warn('⚠️ Received legacy event_data format, using fallback');
+						}}
+						// Alternative format: Direct rrweb event
+						else if (data.type !== undefined) {{
+							rrwebEvent = data;
+							console.warn('⚠️ Received direct rrweb event format');
+						}}
+						// Unknown format
+						else {{
+							console.error('❌ Unknown event format:', Object.keys(data));
+							return;
+						}}
+						
+						// Validate rrweb event structure
+						if (!rrwebEvent || typeof rrwebEvent.type !== 'number') {{
+							console.error('❌ Invalid rrweb event structure:', rrwebEvent);
+							return;
+						}}
+						
+						// Initialize replayer on first FullSnapshot (type 2)
+						if (rrwebEvent.type === 2 && !replayer) {{
+							console.log('🎬 Initializing replayer with FullSnapshot');
+							initReplayer();
+						}}
+						
+						// Add event to replayer if it exists
+						if (replayer && typeof replayer.addEvent === 'function') {{
+							try {{
+								replayer.addEvent(rrwebEvent);
+								eventCount++;
+								document.getElementById('event-count').textContent = eventCount;
+								
+								// Enhanced logging for debugging
+								if (rrwebEvent.type === 2) {{
+									console.log('📸 FullSnapshot added to replayer');
+								}} else if (rrwebEvent.type === 3) {{
+									console.log('📝 IncrementalSnapshot added to replayer');
+								}}
+								
+							}} catch (replayError) {{
+								console.warn('⚠️ Replayer error (continuing anyway):', replayError);
+								// Continue processing other events even if one fails
+							}}
+						}} else if (rrwebEvent.type === 2) {{
+							console.error('❌ FullSnapshot received but replayer not available');
 						}}
 					}};
 					
@@ -1515,7 +1614,6 @@ async def get_active_workflow_executions(session_token: str):
 		logger.error(f"Error getting active workflow executions: {e}")
 		raise HTTPException(status_code=500, detail=f"Failed to retrieve active executions: {str(e)}")
 
-
 # ENHANCED: Visual streaming sessions with execution history context
 @db_wf_router.get("/visual/sessions/enhanced", response_model=EnhancedVisualStreamingSessionsResponse)
 async def get_enhanced_visual_streaming_sessions(session_token: str):
@@ -1628,255 +1726,3 @@ async def get_enhanced_visual_streaming_sessions(session_token: str):
 	except Exception as e:
 		logger.error(f"Error getting enhanced visual streaming sessions: {e}")
 		raise HTTPException(status_code=500, detail=str(e))
-
-# NEW: Auto-trigger endpoint for visual streaming sessions
-@db_wf_router.get("/visual/{session_id}/auto-start", response_model=dict)
-async def auto_start_visual_session(session_id: str, workflow_id: Optional[str] = None, session_token: Optional[str] = None):
-	"""Auto-start a workflow execution for a visual streaming session if it doesn't exist"""
-	try:
-		service = get_service()
-		
-		# Check if session already exists and is active
-		try:
-			from backend.visual_streaming import streaming_manager
-			from backend.websocket_manager import websocket_manager
-			
-			# Check if session already has an active streamer
-			existing_streamer = streaming_manager.get_streamer(session_id)
-			if existing_streamer:
-				stats = existing_streamer.get_stats()
-				if stats.get('streaming_active', False):
-					return {
-						"success": True,
-						"session_exists": True,
-						"message": "Visual streaming session already active",
-						"session_id": session_id,
-						"streaming_active": True,
-						"events_processed": stats.get('total_events', 0)
-					}
-		except ImportError:
-			pass
-		
-		# Check if there's an active task for this session
-		task_id = session_id.replace('visual-', '') if session_id.startswith('visual-') else session_id
-		
-		# Look for active task
-		active_task = service.active_tasks.get(task_id)
-		if active_task:
-			return {
-				"success": True,
-				"session_exists": True,
-				"message": "Workflow execution already running",
-				"session_id": session_id,
-				"task_id": task_id,
-				"status": active_task.status,
-				"workflow": active_task.workflow
-			}
-		
-		# If no workflow_id provided, return available workflows for selection
-		if not workflow_id:
-			try:
-				# Check if supabase is available
-				if not supabase:
-					return {
-						"success": False,
-						"error": "Database not configured"
-					}
-				
-				# Get list of available workflows from database
-				workflows_response = supabase.table("workflows").select("id, name, description").limit(20).execute()
-				workflows = workflows_response.data if workflows_response.data else []
-				
-				return {
-					"success": True,
-					"session_exists": False,
-					"message": "No active session found. Select a workflow to start execution.",
-					"session_id": session_id,
-					"available_workflows": workflows,
-					"auto_start_url": f"/workflows/visual/{session_id}/auto-start"
-				}
-			except Exception as e:
-				logger.error(f"Error fetching workflows: {e}")
-				return {
-					"success": False,
-					"error": f"Failed to fetch available workflows: {str(e)}"
-				}
-		
-		# Validate session token if provided
-		user_id = None
-		if session_token:
-			user_id = await validate_session_token(session_token)
-			if not user_id:
-				return {
-					"success": False,
-					"error": "Invalid or expired session token"
-				}
-		
-		# Verify workflow exists (workflow_id is guaranteed to be not None here)
-		if not workflow_id:
-			return {
-				"success": False,
-				"error": "workflow_id is required for auto-start"
-			}
-		
-		workflow = await get_workflow_by_id(workflow_id)
-		if not workflow:
-			return {
-				"success": False,
-				"error": f"Workflow {workflow_id} not found"
-			}
-		
-		# Check workflow ownership if user authenticated
-		if user_id and workflow.get('owner_id') != user_id:
-			return {
-				"success": False,
-				"error": "Access denied: You don't own this workflow"
-			}
-		
-		# Start workflow execution with the specific session_id
-		cancel_event = asyncio.Event()
-		service.cancel_events[task_id] = cancel_event
-		
-		# Start workflow execution with visual streaming
-		task = asyncio.create_task(
-			service.run_workflow_session_with_visual_streaming(
-				task_id=task_id,
-				workflow_id=workflow_id,  # Now guaranteed to be string
-				inputs={},  # Default empty inputs
-				cancel_event=cancel_event,
-				owner_id=user_id,
-				mode="cloud-run",
-				visual=False,  # Focus on visual streaming, not DevTools
-				visual_streaming=True,
-				visual_quality="standard",
-				visual_events_buffer=1000
-			)
-		)
-		
-		# Track the task
-		service.workflow_tasks[task_id] = task
-		task.add_done_callback(
-			lambda _: (
-				service.workflow_tasks.pop(task_id, None),
-				service.cancel_events.pop(task_id, None),
-			)
-		)
-		
-		return {
-			"success": True,
-			"session_exists": False,
-			"message": f"Started workflow '{workflow.get('name', 'Unknown')}' with visual streaming",
-			"session_id": session_id,
-			"task_id": task_id,
-			"workflow_id": workflow_id,
-			"workflow_name": workflow.get('name', 'Unknown'),
-			"visual_streaming_enabled": True,
-			"visual_stream_url": f"/workflows/visual/{session_id}/stream",
-			"viewer_url": f"/workflows/visual/{session_id}/viewer"
-		}
-		
-	except Exception as e:
-		logger.error(f"Error in auto-start visual session: {e}")
-		return {
-			"success": False,
-			"error": f"Failed to auto-start visual session: {str(e)}"
-		}
-
-# NEW: Quick start endpoint with workflow selection
-@db_wf_router.post("/visual/{session_id}/quick-start", response_model=dict)
-async def quick_start_visual_workflow(session_id: str, request: dict):
-	"""Quick start a workflow execution for visual streaming with user selection"""
-	try:
-		service = get_service()
-		workflow_id = request.get('workflow_id')
-		session_token = request.get('session_token')
-		inputs = request.get('inputs', {})
-		mode = request.get('mode', 'cloud-run')
-		
-		if not workflow_id:
-			return {
-				"success": False,
-				"error": "workflow_id is required"
-			}
-		
-		# Validate session token if provided
-		user_id = None
-		if session_token:
-			user_id = await validate_session_token(session_token)
-			if not user_id:
-				return {
-					"success": False,
-					"error": "Invalid or expired session token"
-				}
-		
-		# Verify workflow exists
-		workflow = await get_workflow_by_id(workflow_id)
-		if not workflow:
-			return {
-				"success": False,
-				"error": f"Workflow {workflow_id} not found"
-			}
-		
-		# Check workflow ownership if user authenticated
-		if user_id and workflow.get('owner_id') != user_id:
-			return {
-				"success": False,
-				"error": "Access denied: You don't own this workflow"
-			}
-		
-		# Extract task_id from session_id
-		task_id = session_id.replace('visual-', '') if session_id.startswith('visual-') else session_id
-		
-		# Check if already running
-		if task_id in service.active_tasks:
-			return {
-				"success": False,
-				"error": "A workflow is already running for this session"
-			}
-		
-		# Start workflow execution
-		cancel_event = asyncio.Event()
-		service.cancel_events[task_id] = cancel_event
-		
-		task = asyncio.create_task(
-			service.run_workflow_session_with_visual_streaming(
-				task_id=task_id,
-				workflow_id=workflow_id,
-				inputs=inputs,
-				cancel_event=cancel_event,
-				owner_id=user_id,
-				mode=mode,
-				visual=False,
-				visual_streaming=True,
-				visual_quality="standard",
-				visual_events_buffer=1000
-			)
-		)
-		
-		# Track the task
-		service.workflow_tasks[task_id] = task
-		task.add_done_callback(
-			lambda _: (
-				service.workflow_tasks.pop(task_id, None),
-				service.cancel_events.pop(task_id, None),
-			)
-		)
-		
-		return {
-			"success": True,
-			"message": f"Started workflow '{workflow.get('name', 'Unknown')}' with visual streaming",
-			"session_id": session_id,
-			"task_id": task_id,
-			"workflow_id": workflow_id,
-			"workflow_name": workflow.get('name', 'Unknown'),
-			"visual_streaming_enabled": True,
-			"visual_stream_url": f"/workflows/visual/{session_id}/stream",
-			"viewer_url": f"/workflows/visual/{session_id}/viewer"
-		}
-		
-	except Exception as e:
-		logger.error(f"Error in quick-start visual workflow: {e}")
-		return {
-			"success": False,
-			"error": f"Failed to start visual workflow: {str(e)}"
-		}
