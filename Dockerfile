@@ -64,5 +64,5 @@ RUN chmod +x verify_playwright.py
 EXPOSE $PORT
 
 # Start command with virtual display and dynamic port
-# Optionally run verification before starting the server
+# Run verification before starting the server (continues even with warnings)
 CMD python verify_playwright.py && xvfb-run -a -s '-screen 0 1920x1080x24' python -m uvicorn backend.api:app --host 0.0.0.0 --port ${PORT:-8000} 
