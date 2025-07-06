@@ -45,6 +45,18 @@ RUN pip install gotrue>=1.0.0
 RUN pip install PyJWT>=2.8.0
 RUN pip install python-dotenv>=1.0.0
 RUN pip install browser-use>=0.2.4
+RUN pip install langchain-openai>=0.1.0
+RUN pip install langchain-core>=0.2.0
+RUN pip install langchain>=0.2.0
+RUN pip install requests>=2.31.0
+RUN pip install pyperclip>=1.8.2
+RUN pip install orjson>=3.9.0
+RUN pip install patchright>=0.1.0
+RUN pip install websockets>=12.0
+RUN pip install psutil>=5.9.0
+RUN pip install asyncio-mqtt>=0.16.0
+RUN pip install python-json-logger>=2.0.7
+RUN pip install "pydantic[email]>=2.0.0"
 
 # Install Playwright and browsers (CRITICAL for browser-use)
 RUN pip install playwright>=1.40.0
