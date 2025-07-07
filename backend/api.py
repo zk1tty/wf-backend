@@ -41,6 +41,9 @@ app = FastAPI(title='Rebrowse Service')
 # ─── CORS ────────
 origins = [
     "https://app.rebrowse.me",         # production UI
+    "https://rebrowse.me",             # production UI (without www)
+    "https://www.rebrowse.me",         # production UI (with www)
+	"https://api.rebrowse.me", 
     "http://localhost:5173",           # local Vite dev
     "http://localhost:3000",           # React dev server
     "http://localhost:8080",           # Alternative dev server
@@ -49,7 +52,9 @@ origins = [
     "http://127.0.0.1:8080",           # Alternative dev server (127.0.0.1)
     "chrome-extension://<EXT_ID>",     # Chrome extension
 ]
-origin_regex = r"https:\/\/.*\.vercel\.app"   # Vercel preview URLs
+
+# More comprehensive regex patterns for various domains
+origin_regex = r"https:\/\/.*\.(vercel\.app|netlify\.app|railway\.app|rebrowse\.me)"   # Various hosting platforms
 
 app.add_middleware(
     CORSMiddleware,
@@ -58,11 +63,49 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],  # Allow all HTTP methods (GET, POST, PATCH, DELETE, PUT, OPTIONS)
     allow_headers=["*"],
+    expose_headers=["*"],  # Expose all headers to frontend
 )
+
+# Add CORS debugging middleware
+@app.middleware("http")
+async def cors_debug_middleware(request: Request, call_next):
+    """Debug CORS requests to help identify issues"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Log CORS-related headers
+    origin = request.headers.get("origin")
+    if origin:
+        logger.info(f"CORS request from origin: {origin}")
+    
+    response = await call_next(request)
+    
+    # Log CORS response headers
+    cors_headers = {k: v for k, v in response.headers.items() if 'access-control' in k.lower()}
+    if cors_headers:
+        logger.info(f"CORS response headers: {cors_headers}")
+    
+    return response
 #-----
 
 # Initialize service with app instance
 service = get_service(app=app)
+
+# CORS preflight handler
+@app.options("/{full_path:path}")
+async def cors_preflight(full_path: str):
+    """Handle CORS preflight requests for all endpoints"""
+    return {}
+
+# CORS test endpoint
+@app.get("/cors-test")
+async def cors_test():
+    """Test endpoint to verify CORS is working"""
+    return {
+        "message": "CORS is working!",
+        "timestamp": "2024-01-01T00:00:00Z",
+        "status": "success"
+    }
 
 # Health check endpoint for Railway
 @app.get("/health")
