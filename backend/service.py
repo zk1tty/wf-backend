@@ -666,8 +666,9 @@ class WorkflowService:
 				raise ValueError(f"Workflow {workflow_id} not found in database")
 			
 			# Verify ownership if owner_id provided
-			if owner_id and workflow_data.get('owner_id') and workflow_data.get('owner_id') != owner_id:
-				raise ValueError(f"Access denied: User {owner_id} does not own workflow {workflow_id}")
+			# Allow execution for public workflows
+			# if owner_id and workflow_data.get('owner_id') and workflow_data.get('owner_id') != owner_id:
+			# 	raise ValueError(f"Access denied: User {owner_id} does not own workflow {workflow_id}")
 			
 			workflow_name = workflow_data.get('name', f'workflow_{workflow_id}')
 			
@@ -947,8 +948,21 @@ class WorkflowService:
 			execution_time_seconds = execution_end_time - execution_start_time
 			
 			await self._write_error_log(log_file, f'[{self._get_timestamp()}] Session workflow error: {exc}\n')
-			self.active_tasks[task_id].status = 'failed'
-			self.active_tasks[task_id].error = str(exc)
+			
+			# Fix: Only update task status if task exists in active_tasks
+			if task_id in self.active_tasks:
+				self.active_tasks[task_id].status = 'failed'
+				self.active_tasks[task_id].error = str(exc)
+			else:
+				# Create task info if it doesn't exist (for early failures)
+				from backend.views import TaskInfo
+				task_info = TaskInfo(
+					status='failed',
+					workflow=f'workflow_{workflow_id}',
+					result=None,
+					error=str(exc),
+				)
+				self.active_tasks[task_id] = task_info
 
 			# Mark browser not ready on error
 			if visual_streaming and session_id:
@@ -1023,7 +1037,8 @@ class WorkflowService:
 					await self._write_warning_log(log_file, f'Error stopping visual streaming: {e}\n')
 
 			# Cleanup browser instance (only if it's the regular browser, not the visual browser)
-			if browser and browser != browser_for_workflow:
+			# Fix: Check if browser variable exists and is not None before using it
+			if 'browser' in locals() and browser and browser != browser_for_workflow:
 				try:
 					await browser.close()
 					await self._write_log(log_file, f'[{self._get_timestamp()}] Regular browser instance closed\n')

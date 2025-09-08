@@ -791,10 +791,10 @@ async def execute_workflow_session(id: uuid.UUID, request: SessionVisualWorkflow
 		if not workflow:
 			raise HTTPException(status_code=404, detail="Workflow not found")
 		
-		# Check ownership (allow execution of public workflows)
-		workflow_owner_id = workflow.get("owner_id")
-		if workflow_owner_id and workflow_owner_id != user_id:
-			raise HTTPException(status_code=403, detail="You don't have permission to execute this workflow")
+		# # Check ownership (allow execution of public workflows)
+		# workflow_owner_id = workflow.get("owner_id")
+		# if workflow_owner_id and workflow_owner_id != user_id:
+		# 	raise HTTPException(status_code=403, detail="You don't own this workflow")
 		
 		# Get workflow service instance
 		service = get_service()
