@@ -80,6 +80,8 @@ class BrowserProfileManager:
         try:
             session_dir = self.base_session_dir / session_id
             if session_dir.exists():
+                # Remove Chromium singleton lock artifacts if present
+                self._remove_chromium_singleton_locks(session_dir)
                 shutil.rmtree(session_dir, ignore_errors=True)
                 logger.info(f"Cleaned up session directory: {session_dir}")
                 return True
@@ -118,6 +120,32 @@ class BrowserProfileManager:
         
         logger.info(f"Cleaned up {cleaned_count} old sessions")
         return cleaned_count
+
+    def _remove_chromium_singleton_locks(self, directory: Path) -> None:
+        """Best-effort removal of Chromium ProcessSingleton lock files.
+
+        This is safe to call on both ephemeral session dirs and persistent profiles.
+        For persistent profiles, we only delete lock artifacts; the profile remains.
+        """
+        try:
+            patterns = [
+                'SingletonLock',
+                'SingletonCookie',
+                'SingletonSocket',
+            ]
+            removed = 0
+            for name in patterns:
+                target = directory / name
+                if target.exists():
+                    try:
+                        target.unlink()
+                        removed += 1
+                    except Exception:
+                        pass
+            if removed:
+                logger.info(f"Removed {removed} Chromium Singleton* lock files from {directory}")
+        except Exception as e:
+            logger.debug(f"Failed to remove singleton locks in {directory}: {e}")
     
     def get_user_profile_info(self, user_id: str) -> Dict[str, Any]:
         """
@@ -171,7 +199,10 @@ class BrowserProfileManager:
             'user_data_dir': str(session_dir),
             'headless': True,
             'disable_security': True,
-            'keep_alive': False,
+            # Keep the browser session alive across step-level agent tasks,
+            # So Agent won’t auto-close the browser after a single step’s fallback success.
+            # visual/streaming workflows can continue executing subsequent steps.
+            'keep_alive': True,
             
             # 🎯 CRITICAL: Enable CSP bypass for rrweb recording (like official rrweb implementation)
             'bypass_csp': True,

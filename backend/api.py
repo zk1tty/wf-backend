@@ -91,6 +91,28 @@ async def cors_debug_middleware(request: Request, call_next):
 # Initialize service with app instance
 service = get_service(app=app)
 
+# ─── File logging for browser_use/workflow_use ────────
+try:
+    import logging
+    from logging.handlers import RotatingFileHandler
+    log_dir = os.path.join('tmp', 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    bu_log_path = os.path.join(log_dir, 'browser_use.log')
+    handler = RotatingFileHandler(bu_log_path, maxBytes=5 * 1024 * 1024, backupCount=3)
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] [%(name)s] %(message)s')
+    handler.setFormatter(formatter)
+    handler.setLevel(logging.INFO)
+
+    for name in ['browser_use', 'workflow_use']:
+        logger = logging.getLogger(name)
+        logger.setLevel(logging.INFO)
+        # Avoid duplicate handlers if reloaded
+        if not any(isinstance(h, RotatingFileHandler) and getattr(h, 'baseFilename', '') == handler.baseFilename for h in logger.handlers):
+            logger.addHandler(handler)
+except Exception as _e:
+    # Fail-quietly; stdout still shows logs
+    pass
+
 # CORS preflight handler
 @app.options("/{full_path:path}")
 async def cors_preflight(full_path: str):

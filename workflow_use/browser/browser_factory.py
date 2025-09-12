@@ -50,7 +50,8 @@ class BrowserFactory:
         session_id: str, 
         event_callback: Optional[Callable] = None,
         user_id: Optional[str] = None,
-        headless: bool = True
+        headless: bool = True,
+        storage_state: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Browser, RRWebRecorder]:
         """
         Create a browser with rrweb recording capability.
@@ -83,6 +84,14 @@ class BrowserFactory:
             
             # Step 2: Get the browser page
             page = await self._get_browser_page(browser, session_id)
+
+            # Step 2.5: Apply storage state (cookies + localStorage init) if provided
+            if storage_state:
+                try:
+                    await self._apply_storage_state(page, storage_state)
+                    logger.info(f"Applied storage state for session {session_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to apply storage state for session {session_id}: {e}")
             
             # Step 3: Show screensaver (for visual modes)
             if mode == 'visual':
@@ -115,6 +124,64 @@ class BrowserFactory:
             # Clean up any partial state
             await self._cleanup_failed_creation(session_id)
             raise RuntimeError(f"Browser creation failed for session {session_id}: {e}")
+
+    async def _apply_storage_state(self, page: Page, storage_state: Dict[str, Any]) -> None:
+        """Apply cookies and localStorage-like values to the current context/page.
+
+        Notes:
+        - Use storage_state.json
+        - Cookies are applied directly to the context.
+        - localStorage values are applied via an init script that sets items when the
+          page origin matches.
+        """
+        # Apply cookies
+        cookies: List[Dict[str, Any]] = []
+        for c in storage_state.get('cookies', []):
+            try:
+                cookie: Dict[str, Any] = {
+                    'name': c['name'],
+                    'value': c['value'],
+                    'domain': c.get('domain', ''),
+                    'path': c.get('path', '/'),
+                    'expires': c.get('expires', 0),
+                    'httpOnly': c.get('httpOnly', False),
+                    'secure': c.get('secure', True),
+                }
+                # sameSite is optional; include only if present and valid
+                if 'sameSite' in c and c['sameSite'] in ['Lax', 'Strict', 'None']:
+                    cookie['sameSite'] = c['sameSite']
+                cookies.append(cookie)
+            except KeyError:
+                continue
+
+        if cookies:
+            await page.context.add_cookies(cookies)
+
+        # Prepare localStorage init mapping
+        origin_to_kv: Dict[str, Dict[str, str]] = {}
+        for origin_entry in storage_state.get('origins', []):
+            origin = origin_entry.get('origin')
+            kv_list = origin_entry.get('localStorage', []) or []
+            if origin and isinstance(kv_list, list) and kv_list:
+                origin_to_kv[origin] = {item.get('name'): item.get('value') for item in kv_list if 'name' in item and 'value' in item}
+
+        if origin_to_kv:
+            # Inject an init script that sets localStorage for matching origin as early as possible
+            import json as _json
+            mapping_json = _json.dumps(origin_to_kv)
+            script = f"""
+                (() => {{
+                    try {{
+                        const mapping = {mapping_json};
+                        const ls = mapping[location.origin];
+                        if (!ls) return;
+                        for (const [k, v] of Object.entries(ls)) {{
+                            try {{ localStorage.setItem(k, String(v)); }} catch {{}}
+                        }}
+                    }} catch {{}}
+                }})();
+            """
+            await page.context.add_init_script(script=script)
     
     async def create_browser_only(
         self,
@@ -193,7 +260,7 @@ class BrowserFactory:
                 await browser.close()
                 logger.debug(f"Browser closed for session {session_id}")
             
-            # Clean up profile
+            # Clean up profile and remove any Chromium singleton locks
             profile_manager.cleanup_session(session_id)
             logger.debug(f"Profile cleaned up for session {session_id}")
             

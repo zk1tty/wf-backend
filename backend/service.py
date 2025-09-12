@@ -767,11 +767,26 @@ class WorkflowService:
 					
 					# Create browser + recorder using new architecture
 					await self._write_log(log_file, f'[{self._get_timestamp()}] Creating browser with rrweb using new architecture...\n')
+					# Load optional storage state from env or file
+					import base64
+					storage_state_data = None
+					try:
+						# load from env
+						b64 = os.getenv('STORAGE_STATE_JSON_B64')
+						if b64:
+							storage_state_data = json.loads(base64.b64decode(b64).decode('utf-8'))
+						elif os.path.exists('storage_state.json'):
+							with open('storage_state.json', 'r') as _f:
+								storage_state_data = json.load(_f)
+					except Exception as _e:
+						await self._write_warning_log(log_file, f'Failed to load storage_state: {_e}')
+
 					browser_for_workflow, rrweb_recorder = await browser_factory.create_browser_with_rrweb(
 						mode='visual',
 						session_id=session_id,
 						event_callback=streaming_callback,
-						headless=True
+						headless=True,
+						storage_state=storage_state_data,
 					)
 					
 					# Attach recorder to browser for controller access
