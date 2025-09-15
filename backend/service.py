@@ -197,33 +197,31 @@ class WorkflowService:
 				print("[WorkflowService] Searched paths:", playwright_chromium_paths)
 				print("[WorkflowService] Make sure 'playwright install chromium' was run")
 			
-			# Optimized arguments for cloud execution with better navigation support
+			# Optimized arguments for cloud execution with better navigation support (lean set)
 			base_args = [
-					'--no-sandbox',  # Required for Docker/Railway
-					'--disable-dev-shm-usage',  # Overcome limited resource problems
-					'--disable-web-security',  # Disable web security for automation
-					'--disable-features=VizDisplayCompositor',  # Disable compositor
-					'--disable-background-timer-throttling',  # Disable background throttling
+					'--no-sandbox',
+					'--disable-dev-shm-usage',
+					'--disable-web-security',
+					'--disable-features=VizDisplayCompositor',
+					'--disable-background-timer-throttling',
 					'--disable-backgrounding-occluded-windows',
 					'--disable-renderer-backgrounding',
-					'--disable-extensions',  # Disable extensions for security
-					'--no-first-run',  # Skip first run setup
-					'--no-default-browser-check',  # Skip default browser check
-					'--disable-default-apps',  # Disable default apps
-					'--disable-component-update',  # Disable component updates
-					'--disable-background-networking',  # Disable background networking
-					'--disable-sync',  # Disable sync
-					'--metrics-recording-only',  # Disable metrics uploading
-					'--no-report-upload',  # Don't upload crash reports
-					'--disable-breakpad',  # Disable crash reporting
-					# Network and navigation improvements
-					'--aggressive-cache-discard',  # Better memory management
-					'--enable-automation',  # Enable automation features
-					'--disable-blink-features=AutomationControlled',  # Hide automation detection
-					'--disable-client-side-phishing-detection',  # Disable phishing detection that can block navigation
-					'--disable-features=TranslateUI',  # Disable translate UI
-					'--disable-ipc-flooding-protection',  # Allow more IPC messages
-					'--max_old_space_size=4096',  # Increase memory limit
+					'--disable-extensions',
+					'--no-first-run',
+					'--no-default-browser-check',
+					'--disable-default-apps',
+					'--disable-component-update',
+					'--disable-background-networking',
+					'--disable-sync',
+					'--metrics-recording-only',
+					'--no-report-upload',
+					'--disable-breakpad',
+					'--aggressive-cache-discard',
+					'--enable-automation',
+					'--disable-blink-features=AutomationControlled',
+					'--disable-client-side-phishing-detection',
+					'--disable-features=TranslateUI',
+					'--max_old_space_size=512',
 			]
 			
 			# Standard headless configuration with better navigation support

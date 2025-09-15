@@ -212,86 +212,51 @@ class BrowserProfileManager:
             'window_size': {'width': 1920, 'height': 1080},
             
             'args': [
-                # 🎯 CORE SECURITY AND CSP BYPASS
+                # CORE SECURITY AND CSP BYPASS (deduplicated)
                 '--disable-web-security',
-                '--disable-features=VizDisplayCompositor',
-                '--disable-security-warnings',
                 '--allow-running-insecure-content',
-                '--disable-extensions-except',
+                '--disable-security-warnings',
                 '--disable-extensions',
-                
-                # 🎯 COMPREHENSIVE CSP BYPASS FOR COMPLEX SPAS
                 '--disable-site-isolation-trials',
                 '--disable-site-isolation-for-policy',
-                '--disable-features=VizServiceDisplayCompositor',
-                '--disable-features=VizDisplay',
-                '--disable-features=VizResolverPreconnect',
-                '--disable-features=BlockInsecurePrivateNetworkRequests',
-                '--disable-features=BlockInsecurePrivateNetworkRequestsFromPrivate',
-                '--disable-features=BlockInsecurePrivateNetworkRequestsFromUnknown',
-                
-                # 🎯 ENHANCED CORS AND CONTENT SECURITY
-                '--disable-web-security',  # Duplicate for emphasis
-                '--allow-running-insecure-content',
-                '--disable-security-warnings',
-                '--allow-cross-origin-auth-prompt',
                 '--disable-features=VizDisplayCompositor',
                 '--disable-features=CORSMismatchKillSwitch',
                 '--disable-features=SameSiteByDefaultCookies',
                 '--disable-features=CookiesWithoutSameSiteMustBeSecure',
-                
-                # 🎯 CONTENT SCRIPT INJECTION BYPASS
+
+                # CONTENT SCRIPT INJECTION / MISC
                 '--disable-features=ScriptStreaming',
-                '--disable-features=VizServiceDisplayCompositor',
-                '--disable-features=VizDisplayCompositor',
                 '--js-flags=--expose-gc',
-                
-                # 🎯 ADVANCED NETWORK SECURITY BYPASS
+
+                # CERT/SSL RELAXATIONS
                 '--ignore-ssl-errors-spki-list',
                 '--ignore-ssl-errors',
                 '--ignore-certificate-errors-spki-list',
                 '--ignore-certificate-errors',
-                '--allow-running-insecure-content',
                 '--disable-certificate-transparency-logs',
-                
-                # 🎯 FRAME AND IFRAME SECURITY BYPASS
-                '--disable-features=VizDisplayCompositor',
-                '--disable-site-isolation-trials',
-                '--disable-site-isolation-for-policy',
-                '--disable-features=IsolateOrigins',
-                '--disable-features=SitePerProcess',
-                
-                # 🎯 USER AGENT AND AUTOMATION HIDING
+
+                # USER AGENT AND AUTOMATION HIDING
                 '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 '--no-first-run',
-                '--disable-default-browser-check', 
+                '--disable-default-browser-check',
                 '--disable-blink-features=AutomationControlled',
                 '--disable-infobars',
+
+                # CONTAINER/HEADLESS STABILITY
                 '--disable-dev-shm-usage',
                 '--no-sandbox',
                 '--disable-background-timer-throttling',
                 '--disable-backgrounding-occluded-windows',
                 '--disable-renderer-backgrounding',
                 '--disable-features=TranslateUI',
-                '--disable-ipc-flooding-protection',
-                '--new-window',
-                
-                # 🎯 PERFORMANCE OPTIMIZATIONS FOR RECORDING
-                '--disable-features=VizDisplayCompositor',
-                '--disable-features=VizServiceDisplayCompositor',
-                '--disable-features=VizResolverPreconnect',
+
+                # PERFORMANCE OPTIMIZATIONS FOR RECORDING
                 '--disable-gpu-rasterization',
                 '--disable-gpu-compositing',
                 '--disable-software-rasterizer',
-                
-                # 🎯 MEMORY AND RESOURCE OPTIMIZATIONS
-                '--max_old_space_size=4096',
-                '--disable-dev-shm-usage',
-                '--disable-background-timer-throttling',
-                '--disable-backgrounding-occluded-windows',
-                '--disable-renderer-backgrounding',
-                '--disable-features=TranslateUI',
-                '--disable-ipc-flooding-protection'
+
+                # MEMORY CAP
+                '--max_old_space_size=512',
             ]
         }
         
