@@ -66,7 +66,7 @@ origin_regex = r"https:\/\/.*\.(vercel\.app|netlify\.app|railway\.app|rebrowse\.
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=origins + ([os.getenv('CORS_ALLOWED_EXTENSIONS')] if os.getenv('CORS_ALLOWED_EXTENSIONS') else []),
     allow_origin_regex=origin_regex,
     allow_credentials=True,
     allow_methods=["*"],  # Allow all HTTP methods (GET, POST, PATCH, DELETE, PUT, OPTIONS)
@@ -166,6 +166,18 @@ async def health_check():
 		playwright_chromium_path = "/root/.cache/ms-playwright/chromium-1169/chrome-linux/chrome"
 		health_status["playwright_chromium_available"] = os.path.exists(playwright_chromium_path)
 		
+		# Cookies summary (visibility)
+		cookies_enabled = os.getenv('FEATURE_USE_COOKIES', 'true').lower() == 'true'
+		cookies_kid = os.getenv('COOKIE_KID', 'n/a')
+		cookies_ttl = os.getenv('COOKIE_VERIFY_TTL_HOURS', 'n/a')
+		cors_ext = os.getenv('CORS_ALLOWED_EXTENSIONS', 'n/a')
+		health_status["cookies"] = {
+			"enabled": cookies_enabled,
+			"kid": cookies_kid,
+			"ttl_hours": cookies_ttl,
+			"allowlist": cors_ext,
+		}
+
 		# Check if we're in production and warn if Playwright browser is missing
 		is_production = os.getenv('RAILWAY_ENVIRONMENT') is not None
 		if is_production and not health_status["playwright_chromium_available"]:

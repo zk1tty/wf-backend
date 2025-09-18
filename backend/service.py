@@ -790,9 +790,10 @@ class WorkflowService:
 					
 
 					storage_state_data = None
-					# 0. Try latest verified DB record for this owner
+					# 0. Try latest verified DB record for this owner (guarded by FEATURE_USE_COOKIES)
 					try:
-						storage_state_data = self._get_storage_state_for_user(owner_id)
+						if os.getenv('FEATURE_USE_COOKIES', 'true').lower() == 'true':
+							storage_state_data = self._get_storage_state_for_user(owner_id)
 						if storage_state_data:
 							await self._write_log(log_file, f'[{self._get_timestamp()}] Loaded storage_state from DB for user {owner_id}\n')
 					except Exception as _e:
@@ -819,6 +820,10 @@ class WorkflowService:
 									storage_state_data = json.load(_f)
 						except Exception as _e:
 							await self._write_warning_log(log_file, f'Failed to load storage_state from env/file: {_e}')
+
+					# If still None, proceed anonymously (fallback)
+					if storage_state_data is None:
+						await self._write_warning_log(log_file, 'No verified storage_state; proceeding without cookies (anonymous).')
 
 					browser_for_workflow, rrweb_recorder = await browser_factory.create_browser_with_rrweb(
 						mode='visual',
