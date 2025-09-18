@@ -3,11 +3,18 @@ import sys
 import os
 
 import uvicorn
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+import time
+import uuid
+import jwt
+import base64
+import json as _json
 
 from backend.routers import get_service, local_wf_router, db_wf_router
-from backend.dependencies import validate_session_token
+from backend.dependencies import validate_session_token, get_current_user, supabase
+from backend.storage_state_api import router as storage_state_router, public_router as storage_state_public_router
 from fastapi import APIRouter
 
 # TODO: change the name to auth
@@ -31,6 +38,7 @@ async def validate_session(session_token: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Session validation failed: {str(e)}")
+
 
 # Set event loop policy for Windows
 if sys.platform == 'win32':
@@ -90,6 +98,8 @@ async def cors_debug_middleware(request: Request, call_next):
 
 # Initialize service with app instance
 service = get_service(app=app)
+
+# moved to storage_state_api.public_router
 
 # ─── File logging for browser_use/workflow_use ────────
 try:
@@ -285,6 +295,8 @@ async def test_browser():
 app.include_router(auth_router)
 app.include_router(local_wf_router)
 app.include_router(db_wf_router)
+app.include_router(storage_state_router)
+app.include_router(storage_state_public_router)
 
 # Optional standalone runner
 if __name__ == '__main__':

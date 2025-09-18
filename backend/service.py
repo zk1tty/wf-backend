@@ -26,6 +26,11 @@ from workflow_use.builder.service import BuilderService
 
 from .dependencies import supabase
 from .execution_history_service import get_execution_history_service
+from .decrypt_cookies import (
+    get_cookie_upload_by_id,
+    get_latest_verified_cookie_upload,
+    decrypt_storage_state_row,
+)
 from .views import (
 	TaskInfo,
 	WorkflowAddRequest,
@@ -84,6 +89,23 @@ class WorkflowService:
 		self.active_tasks: Dict[str, TaskInfo] = {}
 		self.workflow_tasks: Dict[str, asyncio.Task] = {}
 		self.cancel_events: Dict[str, asyncio.Event] = {}
+
+	def _get_storage_state_for_user(self, user_id: Optional[str]) -> Optional[dict]:
+		"""Fetch latest verified cookies for user and decrypt to Playwright storage_state dict.
+
+		Returns None on any failure. Plaintext is not persisted.
+		"""
+		if not user_id:
+			return None
+		try:
+			row = get_latest_verified_cookie_upload(user_id)
+			if not row:
+				return None
+			state = decrypt_storage_state_row(row)
+			return state
+		except Exception as e:
+			logger.info(f"No storage_state available for user {user_id}: {e}")
+			return None
 
 	def _cleanup_browser_profile(self, profile_path: str = None) -> bool:
 		"""Clean up browser profile directory to prevent SingletonLock conflicts"""
@@ -218,7 +240,7 @@ class WorkflowService:
 					'--disable-breakpad',
 					'--aggressive-cache-discard',
 					'--enable-automation',
-					'--disable-blink-features=AutomationControlled',
+					# '--disable-blink-features=AutomationControlled',
 					'--disable-client-side-phishing-detection',
 					'--disable-features=TranslateUI',
 					'--max_old_space_size=512',
@@ -281,7 +303,7 @@ class WorkflowService:
 				'--disable-default-browser-check',  # Skip default browser check
 				'--disable-extensions',  # Disable extensions for consistency
 				'--enable-automation',  # Enable automation features
-				'--disable-blink-features=AutomationControlled',  # Hide automation detection
+				# '--disable-blink-features=AutomationControlled',  # Hide automation detection # TODO: Remove this for LinkedIn auth?
 				'--disable-client-side-phishing-detection',  # Disable phishing detection
 				'--disable-features=TranslateUI',  # Disable translate UI
 				'--disable-background-networking',  # Disable background networking
@@ -763,21 +785,40 @@ class WorkflowService:
 						except Exception as e:
 							await self._write_error_log(log_file, f'Error in streaming callback: {e}')
 					
-					# Create browser + recorder using new architecture
+					# Create browser + recorder using rrweb architecture
 					await self._write_log(log_file, f'[{self._get_timestamp()}] Creating browser with rrweb using new architecture...\n')
-					# Load optional storage state from env or file
-					import base64
+					
+
 					storage_state_data = None
+					# 0. Try latest verified DB record for this owner
 					try:
-						# load from env
-						b64 = os.getenv('STORAGE_STATE_JSON_B64')
-						if b64:
-							storage_state_data = json.loads(base64.b64decode(b64).decode('utf-8'))
-						elif os.path.exists('storage_state.json'):
-							with open('storage_state.json', 'r') as _f:
-								storage_state_data = json.load(_f)
+						storage_state_data = self._get_storage_state_for_user(owner_id)
+						if storage_state_data:
+							await self._write_log(log_file, f'[{self._get_timestamp()}] Loaded storage_state from DB for user {owner_id}\n')
 					except Exception as _e:
-						await self._write_warning_log(log_file, f'Failed to load storage_state: {_e}')
+						await self._write_warning_log(log_file, f'Failed to load storage_state from DB: {_e}')
+
+					# Fallback 1: legacy per-user file
+					if storage_state_data is None:
+						user_dir = Path.home() / '.browseruse' / 'profiles' / owner_id
+						print(f'[WorkflowService] User directory: {user_dir}')
+						user_storage_state_path = Path(user_dir) / 'storage_state.json'
+						if user_storage_state_path.exists():
+							with open(user_storage_state_path, 'r') as user_storage_file:
+								storage_state_data = json.load(user_storage_file)
+
+					# Fallback 2: env or repo file
+					if storage_state_data is None:
+						import base64
+						try:
+							b64 = os.getenv('STORAGE_STATE_JSON_B64')
+							if b64:
+								storage_state_data = json.loads(base64.b64decode(b64).decode('utf-8'))
+							elif os.path.exists('storage_state.json'):
+								with open('storage_state.json', 'r') as _f:
+									storage_state_data = json.load(_f)
+						except Exception as _e:
+							await self._write_warning_log(log_file, f'Failed to load storage_state from env/file: {_e}')
 
 					browser_for_workflow, rrweb_recorder = await browser_factory.create_browser_with_rrweb(
 						mode='visual',
