@@ -239,7 +239,7 @@ class BrowserProfileManager:
                 '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 '--no-first-run',
                 '--disable-default-browser-check',
-                '--disable-blink-features=AutomationControlled',
+                # '--disable-blink-features=AutomationControlled', # TODO: Remove this for LinkedIn auth?
                 '--disable-infobars',
 
                 # CONTAINER/HEADLESS STABILITY
@@ -255,12 +255,12 @@ class BrowserProfileManager:
                 '--disable-gpu-compositing',
                 '--disable-software-rasterizer',
 
-                # MEMORY CAP
+                # CRITICAL: MEMORY CAP
                 '--max_old_space_size=512',
             ]
         }
         
-        # Future enhancement: If user_id provided, copy persistent data
+        # TODO: Future enhancement: If user_id provided, copy persistent data
         if user_id:
             logger.info(f"Session {session_id} associated with user {user_id}")
             # TODO: Copy user preferences, cookies, etc. from user profile
