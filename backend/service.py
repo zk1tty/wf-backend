@@ -13,7 +13,7 @@ from uuid import uuid4
 import requests
 from browser_use import Browser
 from browser_use.controller.service import Controller
-from langchain_openai import ChatOpenAI
+from browser_use.llm.openai.chat import ChatOpenAI  # Correct provider import
 from supabase import Client
 import aiofiles
 import psutil
@@ -72,11 +72,12 @@ class WorkflowService:
 		self.log_dir: Path = self.tmp_dir / 'logs'
 		self.log_dir.mkdir(exist_ok=True, parents=True)
 
-		# LLM / workflow executor
+		# LLM / workflow executor (use browser_use.llm provider for Agent fallback)
 		try:
-			self.llm_instance = ChatOpenAI(model='gpt-4.1-mini')
+			model_name = os.getenv('BROWSER_USE_MODEL', 'gpt-4o')
+			self.llm_instance = ChatOpenAI(model=model_name, api_key=os.getenv('OPENAI_API_KEY'))
 		except Exception as exc:
-			print(f'Error initializing LLM: {exc}. Ensure OPENAI_API_KEY is set.')
+			print(f'Error initializing browser_use OpenAI LLM: {exc}. Ensure OPENAI_API_KEY and model are set.')
 			self.llm_instance = None
 
 		# Browser configuration for production/Railway
