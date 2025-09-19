@@ -63,7 +63,7 @@ RUN pip install typer==0.16.0
 RUN pip install gotrue==2.12.0
 RUN pip install PyJWT==2.10.1
 RUN pip install python-dotenv==1.1.0
-RUN pip install browser-use==0.2.7
+RUN pip install browser-use==0.5.11
 RUN pip install langchain-openai==0.3.21
 RUN pip install langchain-core==0.3.64
 RUN pip install langchain==0.3.25
