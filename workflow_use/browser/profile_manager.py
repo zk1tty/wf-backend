@@ -1,7 +1,7 @@
 """
 Browser Profile Manager
 
-Clean architecture for managing user profiles and session directories.
+Managing user profiles and session directories for browseruse BrowserProfile
 Separates user-persistent data from temporary session data.
 """
 
@@ -216,7 +216,7 @@ class BrowserProfileManager:
                 '--disable-web-security',
                 '--allow-running-insecure-content',
                 '--disable-security-warnings',
-                '--disable-extensions',
+                # '--disable-extensions', # TODO: need extensions for rrweb injection for recording?
                 '--disable-site-isolation-trials',
                 '--disable-site-isolation-for-policy',
                 '--disable-features=VizDisplayCompositor',
@@ -271,4 +271,4 @@ class BrowserProfileManager:
 
 
 # Global instance for easy access
-profile_manager = BrowserProfileManager() 
+profile_manager = BrowserProfileManager()

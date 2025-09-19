@@ -24,9 +24,12 @@ What it DOESN'T do:
 - Fallback browser creation
 """
 
+import os
 import asyncio
 import json
 import logging
+from pathlib import Path
+import base64
 from collections import deque
 from typing import Optional, Callable, Dict, Any, List
 from browser_use import Browser
@@ -100,6 +103,8 @@ class RRWebRecorder:
         
         # rrweb configuration
         self.rrweb_cdn_url = get_cdn_url()
+        self._init_scripts_added = False
+        self._csp_client = None
         
         logger.info(f"RRWebRecorder initialized for session {session_id}")
     
@@ -121,6 +126,13 @@ class RRWebRecorder:
             logger.debug("Exposing rrweb callback functions...")
             await self._expose_rrweb_event_function()
             await self._expose_rrweb_error_function()
+
+            # New: Add init scripts (bundled rrweb + bootstrap) before any injection attempts
+            await self._ensure_init_scripts()
+            
+            # Optional: Enable CDP CSP stripping if requested
+            if os.getenv('FEATURE_STRIP_CSP', 'false').lower() == 'true':
+                await self._enable_csp_stripping()
             
             # Try both injection methods
             if await self._try_cdn_injection():
@@ -429,6 +441,13 @@ class RRWebRecorder:
             # Re-expose callback functions
             await self._expose_rrweb_event_function()
             await self._expose_rrweb_error_function()
+
+            # Ensure init scripts are present for new documents as well
+            await self._ensure_init_scripts()
+            
+            # Re-enable CSP stripping for new document if configured
+            if os.getenv('FEATURE_STRIP_CSP', 'false').lower() == 'true':
+                await self._enable_csp_stripping()
             
             # Re-inject rrweb
             if await self._try_cdn_injection():
@@ -450,6 +469,135 @@ class RRWebRecorder:
     # ===================================================================
     # PRIVATE METHODS: rrweb Injection and Event Handling
     # ===================================================================
+    async def _ensure_init_scripts(self) -> None:
+        """Add rrweb bundle and bootstrap as init scripts once per context.
+
+        Order:
+        1) rrweb bundle (from RRWEB_BUNDLE_PATH env or placeholder)
+        2) bootstrap (record config + emit wiring)
+        """
+        if self._init_scripts_added:
+            return
+        try:
+            rrweb_js = self._load_rrweb_bundle()
+            if rrweb_js:
+                await self.page.context.add_init_script(script=rrweb_js)
+                logger.info("✅ rrweb bundle init script added")
+            boot_js = self._generate_bootstrap_js()
+            await self.page.context.add_init_script(script=boot_js)
+            logger.info("✅ rrweb bootstrap init script added")
+            self._init_scripts_added = True
+        except Exception as e:
+            logger.warning(f"Failed to add init scripts: {e}")
+
+    def _load_rrweb_bundle(self) -> str:
+        """Load rrweb bundle text from env path, else return a minimal placeholder.
+
+        Env: RRWEB_BUNDLE_PATH points to a local js file containing rrweb UMD build.
+        """
+        path = os.getenv('RRWEB_BUNDLE_PATH')
+        if path:
+            try:
+                text = Path(path).read_text(encoding='utf-8')
+                if 'rrweb' in text:
+                    return text
+            except Exception as e:
+                logger.warning(f"RRWEB_BUNDLE_PATH read failed: {e}")
+        # Minimal placeholder to ensure window.rrweb exists; real record loads via CDN/inline
+        return """
+        (function(){
+          if (!window.rrweb) { window.rrweb = {}; }
+        })();
+        """
+
+    def _generate_bootstrap_js(self) -> str:
+        """Generate a small bootstrap that starts recording when rrweb.record is present.
+
+        This pairs with our CDN/inline flows; with a full bundle in init script,
+        it will start immediately; otherwise it defers until rrweb is available.
+        """
+        options_js = get_recording_options_js()
+        return f"""
+        (function(){{
+          try {{
+            function safeStart() {{
+              if (!window.rrweb || !window.rrweb.record) return false;
+              try {{
+                const stopFn = window.rrweb.record({{
+                  errorHandler: function(error) {{
+                    if (window.sendRRWebError) {{
+                      window.sendRRWebError(JSON.stringify({{
+                        type: 'rrweb_internal_error',
+                        message: String(error),
+                        stack: error && error.stack || ''
+                      }}));
+                    }}
+                  }},
+                  emit: function(event) {{
+                    if (window.sendRRWebEvent) {{
+                      window.sendRRWebEvent(JSON.stringify(event));
+                    }}
+                  }},
+                  ...({options_js})
+                }});
+                window.rrwebStopRecording = stopFn;
+                return true;
+              }} catch (e) {{
+                if (window.sendRRWebError) {{
+                  window.sendRRWebError(JSON.stringify({{
+                    type: 'rrweb_start_error', message: String(e), stack: e && e.stack || ''
+                  }}));
+                }}
+                return false;
+              }}
+              if (!safeStart()) {{
+                let tries = 0; const max = 50; const id = setInterval(function() {{
+                  tries += 1; if (safeStart() || tries >= max) {{ clearInterval(id); }}
+                }}, 100);
+              }}
+          }} catch (e) {{}}
+        }})();
+        """
+
+    async def _enable_csp_stripping(self) -> None:
+        """Enable CDP Fetch interception to strip Content-Security-Policy header.
+
+        Applies to Document responses only. Scoped to current page session.
+        """
+        try:
+            client = await self.page.context.new_cdp_session(self.page)
+            self._csp_client = client
+            await client.send('Fetch.enable', {
+                'patterns': [
+                    { 'urlPattern': '*', 'resourceType': 'Document', 'requestStage': 'Response' }
+                ]
+            })
+
+            async def on_request_paused(params: Dict[str, Any]):
+                try:
+                    request_id = params.get('requestId')
+                    response_headers = params.get('responseHeaders') or []
+                    new_headers = [h for h in response_headers if h.get('name', '').lower() != 'content-security-policy']
+                    status_code = params.get('responseStatusCode', 200)
+                    body_result = await client.send('Fetch.getResponseBody', { 'requestId': request_id })
+                    body = body_result.get('body', '')
+                    base64_encoded = body_result.get('base64Encoded', False)
+                    await client.send('Fetch.fulfillRequest', {
+                        'requestId': request_id,
+                        'responseCode': status_code,
+                        'responseHeaders': new_headers,
+                        'body': body if base64_encoded else base64.b64encode(body.encode('utf-8')).decode('ascii')
+                    })
+                except Exception:
+                    try:
+                        await client.send('Fetch.continueRequest', { 'requestId': params.get('requestId') })
+                    except Exception:
+                        pass
+
+            client.on('Fetch.requestPaused', on_request_paused)
+            logger.info('✅ CDP CSP stripping enabled for Document responses')
+        except Exception as e:
+            logger.warning(f'Failed to enable CSP stripping: {e}')
     
     async def _expose_rrweb_event_function(self) -> bool:
         """Expose the sendRRWebEvent function to the page"""
