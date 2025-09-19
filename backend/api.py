@@ -11,6 +11,7 @@ import uuid
 import jwt
 import base64
 import json as _json
+import logging
 
 from backend.routers import get_service, local_wf_router, db_wf_router
 from backend.dependencies import validate_session_token, get_current_user, supabase
@@ -45,6 +46,57 @@ if sys.platform == 'win32':
 	asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 app = FastAPI(title='Rebrowse Service')
+
+# Redact long session_token values in access logs (keep logs concise yet visible)
+class _RedactSessionTokenInAccessLog(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            # Uvicorn access logs usually pass args as a tuple:
+            # (client_addr, method, path, http_version, status_code)
+            args = record.args
+            if isinstance(args, tuple) and len(args) >= 3:
+                args_list = list(args)
+                args_list[2] = self._redact_session_token(str(args_list[2]))
+                record.args = tuple(args_list)
+                return True
+            # Some versions pass a dict with keys like 'request_line' or 'path'
+            if isinstance(args, dict):
+                if 'request_line' in args and isinstance(args['request_line'], str):
+                    rl = args['request_line']
+                    try:
+                        method, rest = rl.split(' ', 1)
+                        path, httpver = rest.rsplit(' ', 1)
+                        path = self._redact_session_token(path)
+                        args['request_line'] = f"{method} {path} {httpver}"
+                    except Exception:
+                        if 'path' in args:
+                            args['path'] = self._redact_session_token(str(args['path']))
+                elif 'path' in args:
+                    args['path'] = self._redact_session_token(str(args['path']))
+                record.args = args
+                return True
+            # Fallback: if structure is unexpected, don't break formatting
+            return True
+        except Exception:
+            return True
+
+    @staticmethod
+    def _redact_session_token(message: str) -> str:
+        try:
+            import re
+            # Collapse very long JWT-looking tokens while preserving start/end for identification
+            pattern = r'(?P<prefix>session_token=)(?P<token>[A-Za-z0-9._-]+)(?=[^A-Za-z0-9._-]|$)'
+            def _shorten(m: re.Match) -> str:
+                token = m.group('token')
+                if len(token) <= 20:
+                    return m.group(0)
+                # First 5 of token and last 10 of token, e.g., eyJhb...f7y41HheM6
+                return f"{m.group('prefix')}{token[:5]}...{token[-10:]}"
+            return re.sub(pattern, _shorten, message)
+        except Exception:
+            return message
+
+logging.getLogger('uvicorn.access').addFilter(_RedactSessionTokenInAccessLog())
 
 # ─── CORS ────────
 origins = [
@@ -96,8 +148,8 @@ async def cors_debug_middleware(request: Request, call_next):
     return response
 #-----
 
-# Initialize service with app instance
-service = get_service(app=app)
+# Service will be initialized lazily when needed
+# service = get_service(app=app)  # Moved to lazy initialization
 
 # moved to storage_state_api.public_router
 
@@ -144,22 +196,35 @@ async def cors_test():
 async def health_check():
 	"""Health check endpoint for Railway deployment monitoring."""
 	try:
-		# Basic health checks
+		# Basic health checks (without requiring service initialization)
 		health_status = {
 			"status": "healthy",
 			"service": "rebrowse-backend",
-			"llm_available": service.llm_instance is not None,
 			"browser_available": True,  # Browser instances are created dynamically
-			"tmp_dir_exists": service.tmp_dir.exists(),
 		}
 		
-		# Check if we can create a simple file (filesystem test)
-		test_file = service.tmp_dir / "health_check.txt"
+		# Try to get service instance (may fail if Supabase not configured)
 		try:
-			test_file.write_text("health_check")
-			test_file.unlink()  # Clean up
-			health_status["filesystem_writable"] = True
-		except Exception:
+			svc = get_service()
+			health_status["llm_available"] = svc.llm_instance is not None
+			health_status["tmp_dir_exists"] = svc.tmp_dir.exists()
+			health_status["supabase_connected"] = True
+		except Exception as e:
+			health_status["supabase_connected"] = False
+			health_status["supabase_error"] = str(e)
+			health_status["llm_available"] = False
+			health_status["tmp_dir_exists"] = False
+		
+		# Check if we can create a simple file (filesystem test)
+		if health_status.get("supabase_connected", False):
+			test_file = svc.tmp_dir / "health_check.txt"
+			try:
+				test_file.write_text("health_check")
+				test_file.unlink()  # Clean up
+				health_status["filesystem_writable"] = True
+			except Exception:
+				health_status["filesystem_writable"] = False
+		else:
 			health_status["filesystem_writable"] = False
 		
 		# Check Playwright browser availability (production critical)
