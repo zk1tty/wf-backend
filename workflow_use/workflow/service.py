@@ -9,11 +9,7 @@ from typing import Any, Dict, List, TypeVar, Optional, Callable
 
 from browser_use import Agent, Browser
 from browser_use.agent.views import ActionResult, AgentHistoryList
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.tools import StructuredTool
+from typing import Any
 from pydantic import BaseModel, create_model
 
 from workflow_use.controller.service import WorkflowController
@@ -59,8 +55,8 @@ class Workflow:
 		*,
 		controller: WorkflowController | None = None,
 		browser: Browser | None = None,
-		llm: BaseChatModel | None = None,
-		page_extraction_llm: BaseChatModel | None = None,
+		llm: Any | None = None,
+		page_extraction_llm: Any | None = None,
 		fallback_to_agent: bool = True,
 		# NEW: Visual streaming parameters
 		visual_streaming: bool = False,
@@ -469,6 +465,7 @@ class Workflow:
 		except Exception as e:
 			raise ValueError(f'Invalid workflow inputs: {e}') from e
 
+	# Replace {key} with the value of the key in the context
 	def _resolve_placeholders(self, data: Any) -> Any:
 		"""Recursively replace placeholders in *data* using current context variables.
 
@@ -479,6 +476,12 @@ class Workflow:
 				# Only attempt to format if placeholder syntax is likely present
 				if '{' in data and '}' in data:
 					formatted_data = data.format(**self.context)
+					# Aggressive logging of formatting process for debugging
+					try:
+						keys = list(self.context.keys())
+						logger.info(f"[ctx-format] keys={keys} src={data!r} -> out={formatted_data!r}")
+					except Exception:
+						pass
 					return formatted_data
 				return data  # No placeholders, return as is
 			except KeyError:
@@ -566,6 +569,15 @@ class Workflow:
 			value = str(result)
 
 		self.context[output_key] = value
+		# Aggressive logging of stored context value
+		try:
+			if isinstance(value, str) and len(value) > 200:
+				display_value = value[:200] + '...'
+			else:
+				display_value = value
+			logger.info(f"[ctx-store] context[{output_key!r}] = {display_value!r}")
+		except Exception:
+			pass
 
 	async def _execute_step(self, step_index: int, step_resolved: WorkflowStep) -> ActionResult | AgentHistoryList:
 		"""Execute the resolved step dictionary, handling type branching and fallback."""
@@ -624,33 +636,16 @@ class Workflow:
 		results: List[ActionResult | AgentHistoryList],
 		output_model: type[T],
 	) -> T:
-		"""Convert workflow results to a specified output model.
-
-		Filters ActionResults with extracted_content, then uses LangChain to parse
-		all extracted texts into the structured output model.
-
-		Args:
-			results: List of workflow step results
-			output_model: Target Pydantic model class to convert to
-
-		Returns:
-			An instance of the specified output model
-		"""
+		"""Minimal conversion: join extracted contents and construct output_model if possible."""
 		if not results:
 			raise ValueError('No results to convert')
 
-		if self.llm is None:
-			raise ValueError('LLM is required for structured output conversion')
-
-		# Extract all content from ActionResults
-		extracted_contents = []
-
+		# Extract contents
+		extracted_contents: list[str] = []
 		for result in results:
 			if isinstance(result, ActionResult) and result.extracted_content:
 				extracted_contents.append(result.extracted_content)
-			# TODO: this might be incorrect; but it helps A LOT if extract fucks up and only the agent is able to solve it
 			elif isinstance(result, AgentHistoryList):
-				# Check the agent history for any extracted content
 				for item in result.history:
 					for action_result in item.result:
 						if action_result.extracted_content:
@@ -659,18 +654,15 @@ class Workflow:
 		if not extracted_contents:
 			raise ValueError('No extracted content found in workflow results')
 
-		# Combine all extracted contents
 		combined_text = '\n\n'.join(extracted_contents)
-
-		messages: list[BaseMessage] = [
-			AIMessage(content=STRUCTURED_OUTPUT_PROMPT),
-			HumanMessage(content=combined_text),
-		]
-
-		chain = self.llm.with_structured_output(output_model)
-		chain_result: T = await chain.ainvoke(messages)  # type: ignore
-
-		return chain_result
+		# Try to instantiate output_model with a best-effort field
+		try:
+			return output_model.model_validate({'content': combined_text})  # type: ignore
+		except Exception:
+			# Fallback: return a dict-like wrapper if model doesn't have 'content'
+			class _Wrapper(output_model):  # type: ignore
+				pass
+			return _Wrapper.model_validate({'content': combined_text})  # type: ignore
 
 	async def run_step(self, step_index: int, inputs: dict[str, Any] | None = None):
 		"""Run a *single* workflow step asynchronously and return its result.
@@ -845,64 +837,9 @@ class Workflow:
 		)
 
 	def as_tool(self, *, name: str | None = None, description: str | None = None):  # noqa: D401
-		"""Expose the entire workflow as a LangChain *StructuredTool* instance.
-
-		The generated tool validates its arguments against the workflow's input
-		schema (if present) and then returns the JSON-serialised output of
-		:py:meth:`run`.
-		"""
-
-		InputModel = self._build_input_model()
-		# Use schema name as default, sanitize for tool name requirements
-		default_name = ''.join(c if c.isalnum() else '_' for c in self.name)
-		tool_name = name or default_name[:50]
-		doc = description or self.description  # Use schema description
-
-		# `self` is closed over via the inner function so we can keep state.
-		async def _invoke(**kwargs):  # type: ignore[override]
-			logger.info(f'Running workflow as tool with inputs: {kwargs}')
-			augmented_inputs = kwargs.copy() if kwargs else {}
-			for input_def in self.inputs_def:
-				if not input_def.required and input_def.name not in augmented_inputs:
-					augmented_inputs[input_def.name] = ''
-			result = await self.run(inputs=augmented_inputs)
-			# Serialise non-string output so models that expect a string tool
-			# response still work.
-			try:
-				return _json.dumps(result, default=str)
-			except Exception:
-				return str(result)
-
-		return StructuredTool.from_function(
-			coroutine=_invoke,
-			name=tool_name,
-			description=doc,
-			args_schema=InputModel,
-		)
+		"""Stub: LangChain tool wrapper removed."""
+		raise NotImplementedError('LangChain tool wrapper removed in this build')
 
 	async def run_as_tool(self, prompt: str) -> str:
-		"""
-		Run the workflow with a prompt and automatically parse the required variables.
-
-		@dev Uses AgentExecutor to properly handle the tool invocation loop.
-		"""
-
-		# For now I kept it simple but one could think of using a react agent here.
-		if self.llm is None:
-			raise ValueError("Cannot run as tool: An 'llm' instance must be supplied for tool-based steps")
-
-		prompt_template = ChatPromptTemplate.from_messages(
-			[
-				('system', 'You are a helpful assistant'),
-				('human', '{input}'),
-				# Placeholders fill up a **list** of messages
-				('placeholder', '{agent_scratchpad}'),
-			]
-		)
-
-		# Create the workflow tool
-		workflow_tool = self.as_tool()
-		agent = create_tool_calling_agent(self.llm, [workflow_tool], prompt_template)
-		agent_executor = AgentExecutor(agent=agent, tools=[workflow_tool])
-		result = await agent_executor.ainvoke({'input': prompt})
-		return result['output']
+		"""Stub: LangChain tool runner removed."""
+		raise NotImplementedError('LangChain tool runner removed in this build')
