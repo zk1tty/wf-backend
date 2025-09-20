@@ -887,9 +887,14 @@ class RRWebRecorder:
         try:
             logger.info(f"🔧 Attempting inline injection for session {self.session_id}")
             
-            # Step 1: Use playwright's add_script_tag which bypasses CSP
-            await self.page.add_script_tag(url=self.rrweb_cdn_url)
-            logger.debug(f"Script tag added via playwright for session {self.session_id}")
+            # Step 1: Inject local rrweb bundle content instead of CDN to avoid CSP
+            rrweb_js = self._load_rrweb_bundle()
+            try:
+                await self.page.add_script_tag(content=rrweb_js)
+                logger.debug(f"Injected local rrweb bundle via playwright for session {self.session_id}")
+            except Exception as e:
+                logger.error(f"Failed to inject local rrweb bundle: {e}")
+                raise
             
             # Step 2: ROBUST validation - wait for rrweb to be actually available
             rrweb_available = False

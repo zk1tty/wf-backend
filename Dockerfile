@@ -84,6 +84,10 @@ RUN playwright install chromium
 # Copy application code
 COPY . .
 
+# Ensure rrweb vendor bundle is available in the container and set path
+# The repo includes workflow_use/rrweb/vendor/rrweb.min.js
+ENV RRWEB_BUNDLE_PATH=/app/workflow_use/rrweb/vendor/rrweb.min.js
+
 # Create tmp directory for workflows
 RUN mkdir -p tmp/logs
 
