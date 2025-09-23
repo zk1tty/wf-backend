@@ -247,6 +247,7 @@ class BrowserProfileManager:
                 '--no-sandbox',
 				'--no-zygote',
 				'--renderer-process-limit=1',
+                '--disable-gpu',
                 '--disable-background-timer-throttling',
                 '--disable-backgrounding-occluded-windows',
                 '--disable-renderer-backgrounding',
@@ -268,6 +269,39 @@ class BrowserProfileManager:
             # TODO: Copy user preferences, cookies, etc. from user profile
             # user_profile_dir = self.get_user_profile_dir(user_id)
             # self._copy_user_data_to_session(user_profile_dir, session_dir)
+        
+        # In production containers, prefer Playwright-managed Chromium binary to avoid CDP connection issues
+        try:
+            is_production = os.getenv('RAILWAY_ENVIRONMENT') is not None or os.getenv('RENDER') is not None
+            if is_production:
+                # Common Playwright Chromium locations (keep list short and fast)
+                candidates = [
+                    "/root/.cache/ms-playwright/chromium-1180/chrome-linux/chrome",
+                    "/root/.cache/ms-playwright/chromium-1179/chrome-linux/chrome",
+                    "/root/.cache/ms-playwright/chromium-1169/chrome-linux/chrome",
+                ]
+                chromium_path = None
+                for p in candidates:
+                    if os.path.exists(p):
+                        chromium_path = p
+                        break
+                # Fallback: scan ms-playwright directory shallowly
+                if chromium_path is None:
+                    base_dir = "/root/.cache/ms-playwright"
+                    if os.path.exists(base_dir):
+                        try:
+                            for name in sorted(os.listdir(base_dir), reverse=True):
+                                maybe = os.path.join(base_dir, name, "chrome-linux", "chrome")
+                                if os.path.exists(maybe):
+                                    chromium_path = maybe
+                                    break
+                        except Exception:
+                            pass
+                if chromium_path:
+                    config['executable_path'] = chromium_path
+                    logger.info(f"Using Playwright Chromium binary: {chromium_path}")
+        except Exception as e:
+            logger.debug(f"Chromium executable detection failed: {e}")
         
         return config
 

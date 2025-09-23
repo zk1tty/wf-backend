@@ -6,13 +6,10 @@ ENV PYTHONUNBUFFERED=1
 ENV RAILWAY_ENVIRONMENT=production
 ENV PIP_NO_CACHE_DIR=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-ENV CHROME_DEVEL_SANDBOX=/usr/bin/chromium-browser
 ENV DBUS_SESSION_BUS_ADDRESS=/dev/null
 
 # Install system dependencies including build tools
 RUN apt-get update && apt-get install -y \
-    chromium \
-    chromium-driver \
     fonts-liberation \
     fonts-dejavu-core \
     fontconfig \
