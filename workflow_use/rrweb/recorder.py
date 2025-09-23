@@ -479,7 +479,7 @@ class RRWebRecorder:
             logger.error(f"❌ Failed to re-inject rrweb after page load for session {self.session_id}: {e}")
 
     # ===================================================================
-    # PRIVATE METHODS: rrweb Injection and Event Handling
+    # PRIVATE METHODS: rrweb Injection from local bundle and Event Handling
     # ===================================================================
     async def _ensure_init_scripts(self) -> None:
         """Add rrweb bundle and bootstrap as init scripts once per context.

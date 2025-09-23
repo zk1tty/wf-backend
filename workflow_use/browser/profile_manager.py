@@ -216,7 +216,7 @@ class BrowserProfileManager:
                 '--disable-web-security',
                 '--allow-running-insecure-content',
                 '--disable-security-warnings',
-                # '--disable-extensions', # TODO: need extensions for rrweb injection for recording?
+                '--disable-extensions',
                 '--disable-site-isolation-trials',
                 '--disable-site-isolation-for-policy',
                 '--disable-features=VizDisplayCompositor',
@@ -241,10 +241,14 @@ class BrowserProfileManager:
                 '--disable-default-browser-check',
                 # '--disable-blink-features=AutomationControlled', # TODO: Remove this for LinkedIn auth?
                 '--disable-infobars',
+                '--password-store=basic',
+                '--use-mock-keychain',
+                '--no-service-autorun',
 
                 # CONTAINER/HEADLESS STABILITY
                 '--disable-dev-shm-usage',
                 '--no-sandbox',
+                '--disable-setuid-sandbox',
 				'--no-zygote',
 				'--renderer-process-limit=1',
                 '--disable-gpu',

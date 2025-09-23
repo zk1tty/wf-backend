@@ -75,6 +75,15 @@ class BrowserFactory:
         logger.info(f"Creating browser with rrweb for session {session_id} (mode: {mode})")
         
         try:
+            # Critical: Pre-launch Clean-up
+            # Extra hardening: proactively remove any lingering Chromium singleton locks for this session
+            try:
+                from .profile_manager import profile_manager as _pm
+                session_dir = _pm.get_session_dir(session_id)
+                _pm._remove_chromium_singleton_locks(session_dir)
+            except Exception:
+                pass
+
             # Step 1: Create browser instance
             browser = await self._create_browser_instance(
                 session_id=session_id,
