@@ -1149,7 +1149,8 @@ async def get_visual_streaming_viewer(session_id: str):
 			
 			<script>
 				const sessionId = '{session_id}';
-				const wsUrl = `ws://localhost:8000/workflows/visual/${{sessionId}}/stream`;
+				const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+				const wsUrl = `${{scheme}}://${{location.host}}/workflows/visual/${{sessionId}}/stream`;
 				let replayer = null;
 				let eventCount = 0;
 				

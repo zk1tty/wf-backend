@@ -241,6 +241,8 @@ class WorkflowService:
 					'--disable-breakpad',
 					'--aggressive-cache-discard',
 					'--enable-automation',
+					'--no-zygote',
+					'--renderer-process-limit=1',
 					# '--disable-blink-features=AutomationControlled',
 					'--disable-client-side-phishing-detection',
 					'--disable-features=TranslateUI',

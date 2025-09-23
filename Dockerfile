@@ -3,7 +3,6 @@ FROM python:3.11-slim
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
-ENV DISPLAY=:99
 ENV RAILWAY_ENVIRONMENT=production
 ENV PIP_NO_CACHE_DIR=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -14,7 +13,6 @@ ENV DBUS_SESSION_BUS_ADDRESS=/dev/null
 RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
-    xvfb \
     fonts-liberation \
     fonts-dejavu-core \
     fontconfig \
@@ -97,6 +95,6 @@ RUN chmod +x verify_playwright.py
 # Expose port (Railway will set PORT env var)
 EXPOSE $PORT
 
-# Start command with virtual display and dynamic port
+# Start command without Xvfb (Chromium runs headless)
 # Run verification before starting the server (continues even with warnings)
-CMD python verify_playwright.py && xvfb-run -a -s '-screen 0 1920x1080x24' python -m uvicorn backend.api:app --host 0.0.0.0 --port ${PORT:-8000} 
+CMD python verify_playwright.py && python -m uvicorn backend.api:app --host 0.0.0.0 --port ${PORT:-8000}

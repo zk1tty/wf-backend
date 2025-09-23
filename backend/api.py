@@ -234,7 +234,7 @@ async def health_check():
 		# Cookies summary (visibility)
 		cookies_enabled = os.getenv('FEATURE_USE_COOKIES', 'true').lower() == 'true'
 		cookies_kid = os.getenv('COOKIE_KID', 'n/a')
-		cookies_ttl = os.getenv('COOKIE_VERIFY_TTL_HOURS', 'n/a')
+		cookies_ttl = os.getenv('COOKIE_VERIFY_TTL_HOURS', '24')
 		cors_ext = os.getenv('CORS_ALLOWED_EXTENSIONS', 'n/a')
 		health_status["cookies"] = {
 			"enabled": cookies_enabled,

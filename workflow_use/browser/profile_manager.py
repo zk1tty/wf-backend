@@ -245,6 +245,8 @@ class BrowserProfileManager:
                 # CONTAINER/HEADLESS STABILITY
                 '--disable-dev-shm-usage',
                 '--no-sandbox',
+				'--no-zygote',
+				'--renderer-process-limit=1',
                 '--disable-background-timer-throttling',
                 '--disable-backgrounding-occluded-windows',
                 '--disable-renderer-backgrounding',
