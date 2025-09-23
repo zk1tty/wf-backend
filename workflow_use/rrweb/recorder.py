@@ -131,7 +131,7 @@ class RRWebRecorder:
             await self._ensure_init_scripts()
             
             # Optional: Enable CDP CSP stripping if requested
-            if os.getenv('FEATURE_STRIP_CSP', 'false').lower() == 'true':
+            if os.getenv('FEATURE_STRIP_CSP', 'true').lower() == 'true':
                 await self._enable_csp_stripping()
             
             # Try both injection methods
@@ -158,6 +158,18 @@ class RRWebRecorder:
         except Exception as e:
             logger.error(f"❌ Failed to start rrweb recording for session {self.session_id}: {e}")
             return False
+
+    async def prepare_before_navigation(self) -> None:
+        """Critical: Prepare context so next document runs rrweb immediately.
+
+        Order:
+        1) add_init_script(rrweb bundle)
+        2) add_init_script(bootstrap)
+        3) enable CDP CSP stripping (so upcoming Document response has CSP removed)
+        """
+        await self._ensure_init_scripts()
+        if os.getenv('FEATURE_STRIP_CSP', 'true').lower() == 'true':
+            await self._enable_csp_stripping()
     
     async def stop_recording(self) -> bool:
         """
@@ -446,7 +458,7 @@ class RRWebRecorder:
             await self._ensure_init_scripts()
             
             # Re-enable CSP stripping for new document if configured
-            if os.getenv('FEATURE_STRIP_CSP', 'false').lower() == 'true':
+            if os.getenv('FEATURE_STRIP_CSP', 'true').lower() == 'true':
                 await self._enable_csp_stripping()
             
             # Re-inject rrweb

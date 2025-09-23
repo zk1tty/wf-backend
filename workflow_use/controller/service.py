@@ -72,6 +72,15 @@ class WorkflowController(Controller):
 			"""Navigate to the given URL with explicit rrweb re-injection support."""
 			page = await browser_session.get_current_page()
 			
+			# Prepare rrweb before navigation so init scripts and CSP strip apply to next document
+			rrweb_recorder = getattr(browser_session, '_rrweb_recorder', None)
+			if rrweb_recorder and hasattr(rrweb_recorder, 'prepare_before_navigation'):
+				try:
+					await rrweb_recorder.prepare_before_navigation()
+					logger.info('🔧 rrweb prepared before navigation (init scripts + CSP strip)')
+				except Exception as e:
+					logger.warning(f'Failed to prepare rrweb before navigation: {e}')
+			
 			# Navigate to the URL
 			logger.info(f"🔗 Navigating to: {params.url}")
 			await page.goto(params.url, timeout=30000)
