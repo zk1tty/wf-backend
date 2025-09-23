@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     fonts-liberation \
     fonts-dejavu-core \
     fontconfig \
+    libgbm1 \
     ca-certificates \
     build-essential \
     gcc \
@@ -74,6 +75,7 @@ RUN pip install "pydantic[email]==2.11.7"
 
 # Install Playwright and browsers (CRITICAL for browser-use)
 RUN pip install playwright==1.52.0
+RUN playwright install-deps chromium
 RUN playwright install chromium
 
 # Copy application code
