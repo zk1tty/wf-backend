@@ -390,3 +390,11 @@ class GetWorkflowExecutionHistoryRequest(BaseModel):
 	status_filter: Optional[str] = None  # Filter by execution status
 	mode_filter: Optional[str] = None  # Filter by execution mode
 	visual_streaming_only: bool = False  # Only show executions with visual streaming
+
+
+# NEW: Terminate execution request model
+class TerminateExecutionRequest(BaseModel):
+    session_token: str
+    mode: str = "stop_then_kill"  # "stop_then_kill" | "force"
+    timeout_ms: int = 5000
+    reason: Optional[str] = None

@@ -811,6 +811,7 @@ class WorkflowService:
 							with open(user_storage_state_path, 'r') as user_storage_file:
 								storage_state_data = json.load(user_storage_file)
 
+					# TODO: this fallback is no longer needed?
 					# Fallback 2: env or repo file
 					if storage_state_data is None:
 						import base64
@@ -826,7 +827,7 @@ class WorkflowService:
 
 					# If still None, proceed anonymously (fallback)
 					if storage_state_data is None:
-						await self._write_warning_log(log_file, 'No verified storage_state; proceeding without cookies (anonymous).')
+						await self._write_warning_log(log_file, 'No verified storage_state; Anonymous mode.')
 
 					browser_for_workflow, rrweb_recorder = await browser_factory.create_browser_with_rrweb(
 						mode='visual',

@@ -28,7 +28,8 @@ from .views import (
 	# NEW: Execution history models
 	WorkflowExecutionHistory, WorkflowExecutionHistoryResponse, WorkflowExecutionStatsResponse,
 	CreateWorkflowExecutionRequest, UpdateWorkflowExecutionRequest, GetWorkflowExecutionHistoryRequest,
-	EnhancedVisualStreamingSessionInfo, EnhancedVisualStreamingSessionsResponse
+	EnhancedVisualStreamingSessionInfo, EnhancedVisualStreamingSessionsResponse,
+	TerminateExecutionRequest
 )
 
 # TODO: seperate the folder for local router and db router
@@ -1727,3 +1728,91 @@ async def get_enhanced_visual_streaming_sessions(session_token: str):
 	except Exception as e:
 		logger.error(f"Error getting enhanced visual streaming sessions: {e}")
 		raise HTTPException(status_code=500, detail=str(e))
+
+@db_wf_router.post("/executions/{execution_id}/terminate", response_model=dict, summary="Terminate a running workflow execution")
+async def terminate_workflow_execution(execution_id: str, request: TerminateExecutionRequest):
+	try:
+		if not supabase:
+			raise HTTPException(status_code=503, detail="Database not configured")
+
+		# Validate session token
+		user_id = await validate_session_token(request.session_token)
+		if not user_id:
+			raise HTTPException(status_code=401, detail="Invalid or expired session token")
+
+		# Resolve execution
+		execution_service = get_execution_history_service(supabase)
+		active = execution_service.get_active_executions().get(execution_id)
+		if not active:
+			row = supabase.table("workflow_executions").select("workflow_id,user_id,status,session_id").eq("execution_id", execution_id).single().execute().data
+			if not row:
+				raise HTTPException(status_code=404, detail="Execution not found")
+			if row.get("user_id") != user_id:
+				raise HTTPException(status_code=403, detail="You don't own this execution")
+			return {"success": True, "execution_id": execution_id, "status": row.get("status"), "message": "Execution already finished"}
+
+		# Ownership check
+		if active.get("user_id") and active.get("user_id") != user_id:
+			raise HTTPException(status_code=403, detail="You don't own this execution")
+
+		# Identifiers
+		session_id = active.get("session_id")
+		svc = get_service()
+		# Try to pick any active task (best-effort)
+		task_id = next(iter(svc.workflow_tasks.keys()), None)
+
+		mode = (request.mode or "stop_then_kill").lower()
+		timeout_ms = max(0, int(request.timeout_ms or 5000))
+
+		# Close rrweb streaming immediately
+		try:
+			from backend.visual_streaming import streaming_manager
+			streamer = streaming_manager.get_streamer(session_id) if session_id else None
+			if streamer:
+				await streamer.transition_to_cleanup()
+				await streamer.final_cleanup()
+				await streamer.stop_streaming()
+		except Exception:
+			pass
+
+		# Graceful cancel
+		if task_id and task_id in svc.cancel_events:
+			svc.cancel_events[task_id].set()
+
+		if mode == "stop_then_kill" and timeout_ms > 0:
+			import asyncio as _asyncio
+			try:
+				await _asyncio.sleep(timeout_ms / 1000.0)
+			except Exception:
+				pass
+
+		# Force cleanup of browser session
+		try:
+			from workflow_use.browser.browser_factory import browser_factory
+			if session_id:
+				await browser_factory.cleanup_session(session_id)
+		except Exception:
+			pass
+
+		# Update execution status
+		await execution_service.update_execution_status(
+			execution_id=execution_id,
+			status="cancelled",
+			error=request.reason or None
+		)
+
+		return {
+			"success": True,
+			"execution_id": execution_id,
+			"task_id": task_id,
+			"session_id": session_id,
+			"mode": mode,
+			"timeout_ms": timeout_ms,
+			"status": "terminating" if mode == "stop_then_kill" else "killed",
+			"message": "Termination initiated"
+		}
+
+	except HTTPException:
+		raise
+	except Exception as e:
+		raise HTTPException(status_code=500, detail=f"Failed to terminate execution: {str(e)}")
