@@ -253,6 +253,50 @@ class RRWebRecorder:
         """Get all buffered events for reconnection scenarios"""
         return list(self.event_buffer)
     
+    async def force_full_snapshot(self) -> bool:
+        """Request rrweb to emit a fresh FullSnapshot if possible.
+        First try a benign DOM mutation to prompt capture; if unavailable/ineffective,
+        fall back to a short stop/restart of rrweb.record() to force a new FullSnapshot.
+        """
+        try:
+            if not self.recording_active:
+                return False
+            # Try to nudge rrweb with a DOM mutation
+            await self.page.evaluate("""
+            () => {
+                try {
+                    const elId = '__rrweb_force_fs_marker__';
+                    let el = document.getElementById(elId);
+                    if (!el) {
+                        el = document.createElement('div');
+                        el.id = elId;
+                        el.style.display = 'none';
+                        document.documentElement.appendChild(el);
+                    }
+                    el.setAttribute('data-tick', String(Date.now()));
+                } catch {}
+            }
+            """)
+            await asyncio.sleep(0.1)
+            # If we can safely restart recording, do so to guarantee a fresh FS
+            try:
+                can_restart = await self.page.evaluate("() => !!window.rrwebStopRecording")
+            except Exception:
+                can_restart = False
+            if can_restart:
+                try:
+                    await self.page.evaluate("() => { try { window.rrwebStopRecording && window.rrwebStopRecording(); } catch {} }")
+                    await asyncio.sleep(0.05)
+                    restarted = await self._inject_rrweb_simple()
+                    if restarted:
+                        return True
+                except Exception:
+                    pass
+            return True
+        except Exception as e:
+            logger.warning(f"force_full_snapshot failed: {e}")
+            return False
+    
     def get_status(self) -> Dict[str, Any]:
         """Get current recording status"""
         return {
