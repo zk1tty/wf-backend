@@ -19,6 +19,9 @@ What it DOESN'T do:
 
 import asyncio
 import logging
+import os
+import shutil
+import tempfile
 from typing import Optional, Tuple, Callable, Dict, Any, List
 from browser_use import Browser
 from browser_use.browser import BrowserProfile
@@ -84,8 +87,8 @@ class BrowserFactory:
             except Exception:
                 pass
 
-            # Step 1: Create browser instance
-            browser = await self._create_browser_instance(
+            # Step 1: Create browser instance (with fallback if profile is locked/EAGAIN)
+            browser, temp_profile_dir = await self._create_browser_instance(
                 session_id=session_id,
                 user_id=user_id,
                 headless=headless
@@ -122,7 +125,9 @@ class BrowserFactory:
                 'browser': browser,
                 'recorder': recorder,
                 'mode': mode,
-                'created_at': asyncio.get_event_loop().time()
+                'created_at': asyncio.get_event_loop().time(),
+                # Track any temporary fallback profile for cleanup
+                'temp_profile_dir': temp_profile_dir,
             }
             
             logger.info(f"✅ Browser+Recorder created successfully for session {session_id}")
@@ -216,7 +221,7 @@ class BrowserFactory:
         
         try:
             # Create browser instance
-            browser = await self._create_browser_instance(
+            browser, temp_profile_dir = await self._create_browser_instance(
                 session_id=session_id,
                 user_id=user_id,
                 headless=headless
@@ -227,7 +232,8 @@ class BrowserFactory:
                 'browser': browser,
                 'recorder': None,
                 'mode': 'browser_only',
-                'created_at': asyncio.get_event_loop().time()
+                'created_at': asyncio.get_event_loop().time(),
+                'temp_profile_dir': temp_profile_dir,
             }
             
             logger.info(f"✅ Browser-only created successfully for session {session_id}")
@@ -269,6 +275,15 @@ class BrowserFactory:
                 await browser.close()
                 logger.debug(f"Browser closed for session {session_id}")
             
+            # Clean up any temporary fallback profile created by retry logic
+            temp_profile_dir = session_info.get('temp_profile_dir')
+            if temp_profile_dir and isinstance(temp_profile_dir, str):
+                try:
+                    shutil.rmtree(temp_profile_dir, ignore_errors=True)
+                    logger.debug(f"Removed temporary profile directory: {temp_profile_dir}")
+                except Exception:
+                    pass
+
             # Clean up profile and remove any Chromium singleton locks
             profile_manager.cleanup_session(session_id)
             logger.debug(f"Profile cleaned up for session {session_id}")
@@ -322,7 +337,7 @@ class BrowserFactory:
         session_id: str,
         user_id: Optional[str] = None,
         headless: bool = True
-    ) -> Browser:
+    ) -> Tuple[Browser, Optional[str]]:
         """
         Create the actual browser instance with profile.
         
@@ -350,12 +365,70 @@ class BrowserFactory:
             # Start the browser
             await browser.start()
             logger.debug(f"Browser instance created and started for session {session_id}")
-            
-            return browser
+            # No temp profile was needed
+            return browser, None
             
         except Exception as e:
-            logger.error(f"Failed to create browser instance for session {session_id}: {e}")
-            raise RuntimeError(f"Browser instance creation failed: {e}")
+            # First attempt failed; check if it's a lock/resource error and retry with a fresh temp profile
+            err_text = str(e)
+            logger.warning(f"Primary browser start failed for session {session_id}: {err_text}")
+
+            should_retry = False
+            try:
+                import errno as _errno
+                # EAGAIN (11) indicates resource temporarily unavailable
+                if getattr(e, 'errno', None) in (_errno.EAGAIN, 11):
+                    should_retry = True
+            except Exception:
+                pass
+
+            lock_indicators = [
+                'Resource temporarily unavailable',
+                'Profile at',
+                'is locked',
+                'Chrome subprocess failed to start',
+                'timeout',
+            ]
+            if any(s in err_text for s in lock_indicators):
+                should_retry = True
+
+            if not should_retry:
+                logger.error(f"Failed to create browser instance for session {session_id}: {e}")
+                raise RuntimeError(f"Browser instance creation failed: {e}")
+
+            # Retry path: create a fresh temporary user_data_dir to bypass lock
+            temp_profile_dir = tempfile.mkdtemp(prefix="browseruse-tmp-singleton-")
+            logger.warning(
+                f"Retrying browser start for session {session_id} with temporary profile: {temp_profile_dir}"
+            )
+
+            try:
+                # Refresh config and override user_data_dir
+                retry_config = dict(config)
+                retry_config['user_data_dir'] = temp_profile_dir
+                # Preserve key stability flags; ensure headless parameter stays as requested
+                retry_config['headless'] = headless
+
+                retry_profile = BrowserProfile(**retry_config)
+                retry_browser = Browser(browser_profile=retry_profile)
+                await retry_browser.start()
+                logger.info(
+                    f"Browser started successfully on retry with temporary profile for session {session_id}"
+                )
+                return retry_browser, temp_profile_dir
+            except Exception as retry_err:
+                # Cleanup temp dir if retry also failed
+                try:
+                    shutil.rmtree(temp_profile_dir, ignore_errors=True)
+                except Exception:
+                    pass
+                logger.error(
+                    f"Retry with temporary profile failed for session {session_id}: {retry_err}"
+                )
+                raise RuntimeError(
+                    f"Browser instance creation failed (including retry with fresh temp profile). "
+                    f"Original error: {err_text}. Retry error: {retry_err}"
+                )
     
     async def _get_browser_page(self, browser: Browser, session_id: str) -> Page:
         """
