@@ -82,6 +82,7 @@ RUN pip install psutil==7.0.0
 RUN pip install asyncio-mqtt==0.16.2
 RUN pip install python-json-logger==3.3.0
 RUN pip install "pydantic[email]==2.11.7"
+RUN pip install redis==5.0.8
 
 # Install Playwright and browsers (CRITICAL for browser-use)
 RUN pip install playwright==1.52.0
@@ -105,4 +106,4 @@ EXPOSE $PORT
 
 # Start command without Xvfb (Chromium runs headless)
 # Run verification before starting the server (continues even with warnings)
-CMD python verify_playwright.py && python -m uvicorn backend.api:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD python verify_playwright.py && python -m uvicorn backend.api:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${WEB_CONCURRENCY:-2}
