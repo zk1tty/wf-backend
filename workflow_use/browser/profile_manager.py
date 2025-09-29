@@ -261,7 +261,6 @@ class BrowserProfileManager:
                 # Dbus safety
                 # DBus / Audio / Ozone safety for headless containers
                 '--no-default-browser-check',
-                '--no-startup-window',
                 '--noerrdialogs',
                 '--autoplay-policy=no-user-gesture-required',
                 '--disable-features=AudioServiceOutOfProcess',

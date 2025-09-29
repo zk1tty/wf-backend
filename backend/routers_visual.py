@@ -228,8 +228,10 @@ async def get_visual_streaming_viewer(session_id: str):
             <title>Visual Workflow Viewer - {session_id}</title>
             <script src="https://cdn.jsdelivr.net/npm/rrweb@latest/dist/rrweb.min.js"></script>
             <style>
-                body {{ margin: 0; padding: 20px; font-family: Arial, sans-serif; }}
-                #viewer {{ width: 100%; height: 80vh; border: 1px solid #ccc; }}
+                html, body {{ height: 100%; }}
+                body {{ margin: 0; padding: 12px; font-family: Arial, sans-serif; box-sizing: border-box; }}
+                #viewer {{ position: relative; width: 100%; height: calc(100vh - 80px); border: 1px solid #ccc; overflow: hidden; background: #fff; }}
+                #replayer-root {{ position: absolute; top: 0; left: 0; transform-origin: top left; }}
                 #status {{ padding: 10px; background: #f5f5f5; margin-bottom: 10px; }}
                 .connected {{ color: green; }}
                 .disconnected {{ color: red; }}
@@ -241,7 +243,7 @@ async def get_visual_streaming_viewer(session_id: str):
                 <strong>Status:</strong> <span id="connection-status" class="disconnected">Connecting...</span> |
                 <strong>Events:</strong> <span id="event-count">0</span>
             </div>
-            <div id="viewer"></div>
+            <div id="viewer"><div id="replayer-root"></div></div>
             
             <script>
                 const sessionId = '{session_id}';
@@ -249,10 +251,24 @@ async def get_visual_streaming_viewer(session_id: str):
                 const wsUrl = `${{scheme}}://${{location.host}}/workflows/visual/${{sessionId}}/stream`;
                 let replayer = null;
                 let eventCount = 0;
+                let metaWidth = null;
+                let metaHeight = null;
+                const viewerEl = document.getElementById('viewer');
+                const rootEl = document.getElementById('replayer-root');
+                function applyScale() {{
+                    if (!metaWidth || !metaHeight) return;
+                    const vw = viewerEl.clientWidth;
+                    const vh = viewerEl.clientHeight;
+                    const scale = Math.min(vw / metaWidth, vh / metaHeight);
+                    rootEl.style.width = metaWidth + 'px';
+                    rootEl.style.height = metaHeight + 'px';
+                    rootEl.style.transform = `scale(${scale})`;
+                }}
+                window.addEventListener('resize', applyScale);
                 
                 function initReplayer() {{
                     replayer = new rrweb.Replayer([], {{
-                        target: document.getElementById('viewer'),
+                        target: rootEl,
                         mouseTail: false,
                         useVirtualDom: false,
                         liveMode: true,
@@ -286,6 +302,13 @@ async def get_visual_streaming_viewer(session_id: str):
                         let rrwebEvent = data.event ? data.event : (data.type !== undefined ? data : null);
                         if (!rrwebEvent || typeof rrwebEvent.type !== 'number') return;
                         if (rrwebEvent.type === 2 && !replayer) initReplayer();
+                        if (rrwebEvent.type === 4) {{
+                            // Meta event carries width/height
+                            const d = rrwebEvent.data || {{}};
+                            if (typeof d.width === 'number' && typeof d.height === 'number') {{
+                                metaWidth = d.width; metaHeight = d.height; applyScale();
+                            }}
+                        }}
                         if (replayer && typeof replayer.addEvent === 'function') {{
                             try {{ replayer.addEvent(rrwebEvent); eventCount++; }} catch (_) {{}}
                         }}
