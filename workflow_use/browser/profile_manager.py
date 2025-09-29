@@ -252,10 +252,31 @@ class BrowserProfileManager:
 				'--no-zygote',
 				'--renderer-process-limit=1',
                 '--disable-gpu',
+                '--disable-gpu-sandbox',
                 '--disable-background-timer-throttling',
                 '--disable-backgrounding-occluded-windows',
                 '--disable-renderer-backgrounding',
                 '--disable-features=TranslateUI',
+
+                # Dbus safety
+                # DBus / Audio / Ozone safety for headless containers
+                '--no-default-browser-check',
+                '--no-startup-window',
+                '--noerrdialogs',
+                '--autoplay-policy=no-user-gesture-required',
+                '--disable-features=AudioServiceOutOfProcess',
+                '--disable-features=UseOzonePlatform',
+                '--disable-features=MediaSessionService',
+                '--no-sandbox-and-elevated',
+                '--disable-dev-tools',
+                '--disable-breakpad',
+                '--disable-crash-reporter',
+                '--disable-in-process-stack-traces',
+                '--disable-logging',
+                '--mute-audio',
+                '--allow-pre-commit-input',
+                '--force-color-profile=srgb',
+                '--force-device-scale-factor=1',
 
                 # PERFORMANCE OPTIMIZATIONS FOR RECORDING
                 '--disable-gpu-rasterization',
