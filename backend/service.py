@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 import requests
+from backend.logging_broadcast import execution_id_var
 from browser_use import Browser
 from browser_use.controller.service import Controller
 from browser_use.llm.openai.chat import ChatOpenAI  # Correct provider import
@@ -712,6 +713,14 @@ class WorkflowService:
 				await self._write_warning_log(log_file, f"Failed to create execution record: {e}")
 				# Continue execution even if database tracking fails
 			
+			# Tag logs with execution_id for broadcast duration
+			ctx_token = None
+			try:
+				if execution_id:
+					ctx_token = execution_id_var.set(execution_id)
+			except Exception:
+				ctx_token = None
+
 			# Initialize task info with visual streaming fields
 			from backend.views import TaskInfo
 			task_info = TaskInfo(
@@ -1063,6 +1072,13 @@ class WorkflowService:
 				except Exception as update_error:
 					await self._write_warning_log(log_file, f'Failed to update execution record with error: {update_error}')
 		finally:
+			# Reset execution_id contextvar
+			try:
+				if 'ctx_token' in locals() and ctx_token is not None:
+					execution_id_var.reset(ctx_token)
+			except Exception:
+				pass
+
 			# Clean up temporary file
 			if temp_file and temp_file.exists():
 				try:

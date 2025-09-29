@@ -12,9 +12,11 @@ import jwt
 import base64
 import json as _json
 import logging
+from backend.logging_broadcast import ExecutionIdFilter, LogBroadcastHandler
 
 from backend.routers import get_service, local_wf_router, db_wf_router
 from backend.routers_visual import visual_router
+from backend.routers_logs import logs_router
 from backend.dependencies import validate_session_token, get_current_user, supabase
 from backend.storage_state_api import router as storage_state_router, public_router as storage_state_public_router
 from fastapi import APIRouter
@@ -154,7 +156,7 @@ async def cors_debug_middleware(request: Request, call_next):
 
 # moved to storage_state_api.public_router
 
-# ─── File logging for browser_use/workflow_use ────────
+# ─── File logging for browser_use/workflow_use + broadcast ────────
 try:
     import logging
     from logging.handlers import RotatingFileHandler
@@ -166,12 +168,23 @@ try:
     handler.setFormatter(formatter)
     handler.setLevel(logging.INFO)
 
+    # Ensure ExecutionId is present on all records
+    root_logger = logging.getLogger()
+    # Avoid multiple identical filters on reloads
+    if not any(isinstance(f, ExecutionIdFilter) for f in root_logger.filters):
+        root_logger.addFilter(ExecutionIdFilter())
+
+    # Structured broadcast handler for realtime streaming (attached to namespaces)
+    broadcast_handler = LogBroadcastHandler(level=logging.INFO)
+
     for name in ['browser_use', 'workflow_use']:
         logger = logging.getLogger(name)
         logger.setLevel(logging.INFO)
         # Avoid duplicate handlers if reloaded
         if not any(isinstance(h, RotatingFileHandler) and getattr(h, 'baseFilename', '') == handler.baseFilename for h in logger.handlers):
             logger.addHandler(handler)
+        if not any(isinstance(h, LogBroadcastHandler) for h in logger.handlers):
+            logger.addHandler(broadcast_handler)
 except Exception as _e:
     # Fail-quietly; stdout still shows logs
     pass
@@ -374,6 +387,7 @@ app.include_router(auth_router)
 app.include_router(local_wf_router)
 app.include_router(db_wf_router)
 app.include_router(visual_router)
+app.include_router(logs_router)
 app.include_router(storage_state_router)
 app.include_router(storage_state_public_router)
 
