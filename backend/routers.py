@@ -10,7 +10,8 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 from .dependencies import supabase, get_user, get_user_optional, get_current_user, validate_session_token
-from .service import WorkflowService, list_all_workflows, get_workflow_by_id, build_workflow_from_recording_data, start_workflow_upload_job, get_workflow_job_status
+from .service import list_all_workflows, get_workflow_by_id, build_workflow_from_recording_data, start_workflow_upload_job, get_workflow_job_status
+from .service_factory import get_service
 from .execution_history_service import get_execution_history_service
 from .views import (
 	TaskInfo, WorkflowUpdateRequest, WorkflowMetadataUpdateRequest, WorkflowExecuteRequest,
@@ -34,9 +35,8 @@ from .views import (
 
 # TODO: seperate the folder for local router and db router
 
-# This router is for the original, file-based workflow operations
-# It handles local execution, recording, etc.
-local_wf_router = APIRouter(prefix='/api/workflows')
+# Local (dev/legacy) router moved to backend/routers_local.py
+from .routers_local import local_wf_router
 
 # This router is for the new, Supabase-backed workflow operations
 # It handles creating, reading, and updating workflows in the database.
@@ -46,13 +46,7 @@ db_wf_router = APIRouter(prefix='/workflows')
 _service = None
 
 
-def get_service(app=None) -> WorkflowService:
-	global _service
-	if _service is None:
-		if supabase is None:
-			raise RuntimeError("Supabase client not initialized. Please check your environment variables.")
-		_service = WorkflowService(supabase_client=supabase, app=app)
-	return _service
+# get_service moved to service_factory; keep back-compat import
 
 
 @local_wf_router.get('', response_model=WorkflowListResponse)
@@ -808,12 +802,26 @@ async def execute_workflow_session(id: uuid.UUID, request: SessionVisualWorkflow
 		
 		# Get log position for tracking
 		log_pos = await service._log_file_position()
+
+		# Eager-create execution record to return execution_id immediately
+		from .execution_history_service import get_execution_history_service
+		execution_service = get_execution_history_service(supabase)
+		execution_id = await execution_service.create_execution_record(
+			workflow_id=str(id),
+			user_id=user_id,
+			inputs=request.inputs or {},
+			mode=request.mode,
+			visual_enabled=request.visual,
+			visual_streaming_enabled=request.visual_streaming,
+			visual_quality=request.visual_quality,
+			session_id=f"visual-{task_id}" if request.visual_streaming else None,
+		)
 		
 		# Validate execution mode
 		if request.mode not in ["cloud-run", "local-run"]:
 			raise HTTPException(status_code=400, detail="Invalid mode. Must be 'cloud-run' or 'local-run'")
 		
-		# Start workflow execution in background with visual streaming support
+		# Enforce visual streaming only
 		if request.visual_streaming:
 			# Use enhanced visual streaming execution
 			task = asyncio.create_task(
@@ -827,20 +835,8 @@ async def execute_workflow_session(id: uuid.UUID, request: SessionVisualWorkflow
 					visual=request.visual,
 					visual_streaming=request.visual_streaming,
 					visual_quality=request.visual_quality,
-					visual_events_buffer=request.visual_events_buffer
-				)
-			)
-		else:
-			# Use legacy execution
-			task = asyncio.create_task(
-				service.run_workflow_session_in_background(
-					task_id=task_id,
-					workflow_id=str(id),
-					inputs=request.inputs or {},
-					cancel_event=cancel_event,
-					owner_id=user_id,
-					mode=request.mode,
-					visual=request.visual
+					visual_events_buffer=request.visual_events_buffer,
+					forced_execution_id=execution_id
 				)
 			)
 		
@@ -853,7 +849,7 @@ async def execute_workflow_session(id: uuid.UUID, request: SessionVisualWorkflow
 			)
 		)
 		
-		# Build response with visual streaming information
+		# Build response with visual streaming information (only path)
 		if request.visual_streaming:
 			# Create session_id variable in proper scope
 			visual_session_id = f"visual-{task_id}"
@@ -866,21 +862,12 @@ async def execute_workflow_session(id: uuid.UUID, request: SessionVisualWorkflow
 				message=f"Workflow '{workflow.get('name', 'Unknown')}' execution started with visual streaming (mode: {request.mode})",
 				mode=request.mode,
 				session_id=visual_session_id,
+				execution_id=execution_id,
 				visual_enabled=request.visual,
 				visual_streaming_enabled=request.visual_streaming,
 				visual_quality=request.visual_quality,
 				visual_stream_url=f"/workflows/visual/{visual_session_id}/stream",
 				viewer_url=f"/workflows/visual/{visual_session_id}/viewer"
-			)
-		else:
-			response = WorkflowExecuteResponse(
-				success=True,
-				task_id=task_id,
-				workflow=workflow.get("name", "Unknown"),
-				log_position=log_pos,
-				message=f"Workflow '{workflow.get('name', 'Unknown')}' execution started with task ID: {task_id} (mode: {request.mode})",
-				mode=request.mode,
-				visual_enabled=request.visual
 			)
 		
 				

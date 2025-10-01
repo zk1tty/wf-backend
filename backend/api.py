@@ -14,7 +14,9 @@ import json as _json
 import logging
 from backend.logging_broadcast import ExecutionIdFilter, LogBroadcastHandler
 
-from backend.routers import get_service, local_wf_router, db_wf_router
+from backend.service_factory import get_service
+from backend.routers import db_wf_router
+from backend.routers_local import local_wf_router
 from backend.routers_visual import visual_router
 from backend.routers_logs import logs_router
 from backend.dependencies import validate_session_token, get_current_user, supabase

@@ -77,6 +77,7 @@ class VisualWorkflowResponse(BaseModel):
 	task_id: str
 	session_id: str  # Visual streaming session ID
 	message: str
+	execution_id: Optional[str] = None  # Newly included when available
 	# Legacy and new visual fields
 	workflow: Optional[str] = None  # Workflow name
 	log_position: Optional[int] = None  # Log position for tracking

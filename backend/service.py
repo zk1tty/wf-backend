@@ -660,13 +660,14 @@ class WorkflowService:
 		visual_streaming: bool = False,
 		visual_quality: str = "standard",
 		visual_events_buffer: int = 1000,
+		forced_execution_id: Optional[str] = None,
 	) -> None:
 		"""Execute a workflow from database with enhanced visual streaming support using rrweb."""
 		log_file = self.log_dir / 'backend.log'
 		temp_file = None
 		session_id = f"visual-{task_id}"
 		execution_start_time = time.time()
-		execution_id = None
+		execution_id = forced_execution_id if forced_execution_id else None
 		
 		# Get execution history service for tracking
 		from backend.execution_history_service import get_execution_history_service
@@ -696,22 +697,23 @@ class WorkflowService:
 			
 			workflow_name = workflow_data.get('name', f'workflow_{workflow_id}')
 			
-			# STEP 1: Create execution record in database
-			try:
-				execution_id = await execution_service.create_execution_record(
-					workflow_id=workflow_id,
-					user_id=owner_id,
-					inputs=inputs,
-					mode=mode,
-					visual_enabled=visual,
-					visual_streaming_enabled=visual_streaming,
-					visual_quality=visual_quality,
-					session_id=session_id if visual_streaming else None
-				)
-				await self._write_log(log_file, f"[{self._get_timestamp()}] Created execution record: {execution_id}\n")
-			except Exception as e:
-				await self._write_warning_log(log_file, f"Failed to create execution record: {e}")
-				# Continue execution even if database tracking fails
+			# STEP 1: Create execution record in database if not pre-created
+			if not execution_id:
+				try:
+					execution_id = await execution_service.create_execution_record(
+						workflow_id=workflow_id,
+						user_id=owner_id,
+						inputs=inputs,
+						mode=mode,
+						visual_enabled=visual,
+						visual_streaming_enabled=visual_streaming,
+						visual_quality=visual_quality,
+						session_id=session_id if visual_streaming else None
+					)
+					await self._write_log(log_file, f"[{self._get_timestamp()}] Created execution record: {execution_id}\n")
+				except Exception as e:
+					await self._write_warning_log(log_file, f"Failed to create execution record: {e}")
+					# Continue execution even if database tracking fails
 			
 			# Tag logs with execution_id for broadcast duration
 			ctx_token = None
