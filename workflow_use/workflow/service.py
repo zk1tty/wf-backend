@@ -29,6 +29,7 @@ from workflow_use.schema.views import (
 )
 from workflow_use.workflow.prompts import STRUCTURED_OUTPUT_PROMPT, WORKFLOW_FALLBACK_PROMPT_TEMPLATE
 from workflow_use.workflow.views import WorkflowRunOutput
+from backend.run_events import run_events_hub
 
 # Import new architecture components
 try:
@@ -62,6 +63,7 @@ class Workflow:
 		visual_streaming: bool = False,
 		session_id: Optional[str] = None,
 		event_callback: Optional[Callable] = None,
+		run_id: Optional[str] = None,
 	) -> None:
 		"""Initialize a new Workflow instance from a schema object.
 
@@ -117,6 +119,7 @@ class Workflow:
 		self.page_extraction_llm = page_extraction_llm
 		self.fallback_to_agent = fallback_to_agent
 		self.context: dict[str, Any] = {}
+		self.run_id: Optional[str] = run_id
 
 		self.inputs_def: List[WorkflowInputSchemaDefinition] = self.schema.input_schema
 		self._input_model: type[BaseModel] = self._build_input_model()
@@ -298,6 +301,7 @@ class Workflow:
 		visual_streaming: bool = False,
 		session_id: Optional[str] = None,
 		event_callback: Optional[Callable] = None,
+		run_id: Optional[str] = None,
 	) -> Workflow:
 		"""Load a workflow from a file with optional visual streaming support."""
 		with open(file_path, 'r', encoding='utf-8') as f:
@@ -312,6 +316,7 @@ class Workflow:
 			visual_streaming=visual_streaming,
 			session_id=session_id,
 			event_callback=event_callback,
+			run_id=run_id,
 		)
 
 	# --- Runners ---
@@ -600,11 +605,29 @@ class Workflow:
 				logger.warning(
 					f'Deterministic step {step_index + 1} ({action_name}) failed: {e}. Attempting fallback with agent.'
 				)
+				# Emit FallbackStarted
+				if self.run_id:
+					await run_events_hub.fallback_started(
+						self.run_id,
+						step_id=str(step_index + 1),
+						attempt=0,
+						max_attempts=3,
+						session_id=getattr(self, 'session_id', None),
+					)
 				if self.llm is None:
 					raise ValueError('Cannot fall back to agent: LLM instance required.')
 				if self.fallback_to_agent:
 					result = await self._fallback_to_agent(step_resolved, step_index, e)
 					if not result.is_successful():
+						# Emit single terminal event (prefer fallback terminal)
+						if self.run_id:
+							await run_events_hub.fallback_finished_fail(
+								self.run_id,
+								step_id=str(step_index + 1),
+								attempt=3,
+								max_attempts=3,
+								session_id=getattr(self, 'session_id', None),
+							)
 						raise ValueError(f'Deterministic step {step_index + 1} ({action_name}) failed even after fallback')
 				else:
 					raise ValueError(f'Deterministic step {step_index + 1} ({action_name}) failed: {e}')
@@ -733,6 +756,7 @@ class Workflow:
 		self.context = runtime_inputs.copy()  # Start with a fresh context
 
 		results: List[ActionResult | AgentHistoryList] = []
+		run_failed: bool = False
 
 		# Ensure browser is initialized
 		if not self.browser:
@@ -762,6 +786,9 @@ class Workflow:
 		# Store browser reference to prevent it from being garbage collected
 		self._browser_ref = self.browser
 		try:
+			# Announce run start once
+			if self.run_id:
+				await run_events_hub.run_started(self.run_id)
 			for step_index, step_dict in enumerate(self.steps):  # self.steps now holds dictionaries
 				await asyncio.sleep(0.1)
 				await self.browser._wait_for_stable_network()
@@ -774,16 +801,40 @@ class Workflow:
 				# Use description from the step dictionary
 				step_description = step_dict.description or 'No description provided'
 				logger.info(f'--- Running Step {step_index + 1}/{len(self.steps)} -- {step_description} ---')
+				# Emit StepStarted
+				if self.run_id:
+					step_id = str(step_index + 1)
+					static_key = f"{self.schema.name}:{self.version}:{step_index + 1}:{getattr(step_dict, 'type', 'step')}"
+					await run_events_hub.step_started(
+						self.run_id,
+						step_id=step_id,
+						step_index=step_index + 1,
+						total_steps=len(self.steps),
+						title=step_description,
+						static_step_key=static_key,
+						source_workflow_use=True,
+					)
 				# Resolve placeholders using the current context (works on the dictionary)
 				step_resolved = self._resolve_placeholders(step_dict)
 
 				# Execute step using the unified _execute_step method
-				result = await self._execute_step(step_index, step_resolved)
+				try:
+					result = await self._execute_step(step_index, step_resolved)
+				except Exception:
+					# Ensure a terminal fail is emitted only if fallback terminal was not sent
+					# In practice, deterministic failure without fallback reaches here.
+					if self.run_id and not isinstance(step_resolved, DeterministicWorkflowStep):
+						await run_events_hub.step_finished_fail(self.run_id, step_id=str(step_index + 1))
+					run_failed = True
+					raise
 
 				results.append(result)
 				# Persist outputs using the resolved step dictionary
 				self._store_output(step_resolved, result)
 				logger.info(f'--- Finished Step {step_index + 1} ---\n')
+				# Emit StepFinishedSuccess
+				if self.run_id:
+					await run_events_hub.step_finished_success(self.run_id, step_id=str(step_index + 1))
 
 			# Convert results to output model if requested
 			output_model_result: T | None = None
@@ -791,6 +842,9 @@ class Workflow:
 				output_model_result = await self._convert_results_to_output_model(results, output_model)
 
 		finally:
+			# Announce run end (best-effort)
+			if self.run_id:
+				await c.run_ended(self.run_id, status=("fail" if run_failed else "success"))
 			# Clean-up browser after finishing workflow
 			if close_browser_at_end and self.browser:
 				self.browser.browser_profile.keep_alive = False

@@ -918,7 +918,8 @@ class WorkflowService:
 			workflow = Workflow.load_from_file(
 				str(temp_file),
 				browser=browser_for_workflow,
-				llm=self.llm_instance
+				llm=self.llm_instance,
+				run_id=execution_id
 			)
 			
 			# Check for cancellation before execution

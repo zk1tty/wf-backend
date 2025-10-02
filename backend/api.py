@@ -19,6 +19,7 @@ from backend.routers import db_wf_router
 from backend.routers_local import local_wf_router
 from backend.routers_visual import visual_router
 from backend.routers_logs import logs_router
+from backend.routers_runs import runs_router
 from backend.dependencies import validate_session_token, get_current_user, supabase
 from backend.storage_state_api import router as storage_state_router, public_router as storage_state_public_router
 from fastapi import APIRouter
@@ -390,6 +391,7 @@ app.include_router(local_wf_router)
 app.include_router(db_wf_router)
 app.include_router(visual_router)
 app.include_router(logs_router)
+app.include_router(runs_router)
 app.include_router(storage_state_router)
 app.include_router(storage_state_public_router)
 
