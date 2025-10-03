@@ -20,6 +20,10 @@ async def websocket_run_events(websocket: WebSocket, run_id: str):
     - Then: live events ordered by seq
     """
     await websocket.accept()
+    try:
+        logger.info(f"[run-events-ws] Connected run_id={run_id}")
+    except Exception:
+        pass
 
     send_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
     stop_event = asyncio.Event()
@@ -40,8 +44,16 @@ async def websocket_run_events(websocket: WebSocket, run_id: str):
     # Subscribe and send Snapshot
     await run_events_hub.subscribe(run_id, _on_event)
     try:
+        logger.info(f"[run-events-ws] Subscribed to run_id={run_id}")
+    except Exception:
+        pass
+    try:
         snapshot = await run_events_hub.build_snapshot(run_id)
         await websocket.send_bytes(orjson.dumps(snapshot))
+        try:
+            logger.info(f"[run-events-ws] Sent snapshot run_id={run_id} seq={snapshot.get('seq')} steps={len(snapshot.get('steps', []))}")
+        except Exception:
+            pass
         # Send buffered events after snapshot (best-effort catch-up)
         try:
             buffered = await run_events_hub.get_buffered_events(run_id)
@@ -54,6 +66,10 @@ async def websocket_run_events(websocket: WebSocket, run_id: str):
                     ev_seq = 0
                 if ev_seq > snap_seq:
                     await websocket.send_bytes(orjson.dumps(ev))
+            try:
+                logger.info(f"[run-events-ws] Replayed buffered events after snapshot run_id={run_id} count={len(buffered)}")
+            except Exception:
+                pass
         except Exception:
             pass
     except Exception as e:
@@ -101,5 +117,3 @@ async def websocket_run_events(websocket: WebSocket, run_id: str):
             await websocket.close()
         except Exception:
             pass
-
-

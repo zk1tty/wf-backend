@@ -152,17 +152,17 @@ async def cors_debug_middleware(request: Request, call_next):
         logger.info(f"CORS response headers: {cors_headers}")
     
     return response
-#-----
+#------------------------------------------------
 
-# Service will be initialized lazily when needed
-# service = get_service(app=app)  # Moved to lazy initialization
+"""Startup logging setup with diagnostics for handler/filter attachment.
 
-# moved to storage_state_api.public_router
-
-# ─── File logging for browser_use/workflow_use + broadcast ────────
+We previously swallowed all exceptions here, which could hide issues in prod.
+Now we log a warning with details and also log successful attachment state.
+"""
 try:
     import logging
     from logging.handlers import RotatingFileHandler
+    startup_logger = logging.getLogger(__name__)
     log_dir = os.path.join('tmp', 'logs')
     os.makedirs(log_dir, exist_ok=True)
     bu_log_path = os.path.join(log_dir, 'browser_use.log')
@@ -174,23 +174,31 @@ try:
     # Ensure ExecutionId is present on all records
     root_logger = logging.getLogger()
     # Avoid multiple identical filters on reloads
+    added_filter = False
     if not any(isinstance(f, ExecutionIdFilter) for f in root_logger.filters):
         root_logger.addFilter(ExecutionIdFilter())
+        added_filter = True
 
     # Structured broadcast handler for realtime streaming (attached to namespaces)
     broadcast_handler = LogBroadcastHandler(level=logging.INFO)
 
+    attached = {}
     for name in ['browser_use', 'workflow_use']:
-        logger = logging.getLogger(name)
-        logger.setLevel(logging.INFO)
+        ns_logger = logging.getLogger(name)
+        ns_logger.setLevel(logging.INFO)
         # Avoid duplicate handlers if reloaded
-        if not any(isinstance(h, RotatingFileHandler) and getattr(h, 'baseFilename', '') == handler.baseFilename for h in logger.handlers):
-            logger.addHandler(handler)
-        if not any(isinstance(h, LogBroadcastHandler) for h in logger.handlers):
-            logger.addHandler(broadcast_handler)
+        if not any(isinstance(h, RotatingFileHandler) and getattr(h, 'baseFilename', '') == handler.baseFilename for h in ns_logger.handlers):
+            ns_logger.addHandler(handler)
+        if not any(isinstance(h, LogBroadcastHandler) for h in ns_logger.handlers):
+            ns_logger.addHandler(broadcast_handler)
+        attached[name] = [type(h).__name__ for h in ns_logger.handlers]
+
+    startup_logger.info(f"Log setup complete. ExecutionIdFilter added={added_filter}. Handlers per logger={attached}")
 except Exception as _e:
-    # Fail-quietly; stdout still shows logs
-    pass
+    try:
+        logging.getLogger(__name__).warning(f"Log setup failed: {type(_e).__name__}: {_e}")
+    except Exception:
+        pass
 
 # CORS preflight handler
 @app.options("/{full_path:path}")

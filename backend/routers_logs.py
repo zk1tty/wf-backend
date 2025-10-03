@@ -23,6 +23,17 @@ async def websocket_logs(websocket: WebSocket, execution_id: str):
     unbounded memory growth when clients are slow (basic backpressure).
     """
     await websocket.accept()
+    # Emit a probe log to verify broadcast pipeline end-to-end
+    try:
+        # Emit probe logs on both namespaces with execution_id context
+        base_logger = logging.getLogger('browser_use')
+        adapter = logging.LoggerAdapter(base_logger, extra={'execution_id': execution_id})
+        adapter.info(f"[logs-ws] Connected execution_id={execution_id} (probe)")
+        wu_logger = logging.getLogger('workflow_use')
+        wu_adapter = logging.LoggerAdapter(wu_logger, extra={'execution_id': execution_id})
+        wu_adapter.info(f"[logs-ws] Connected execution_id={execution_id} (probe)")
+    except Exception:
+        pass
 
     hub = LogBroadcastHub.get_global()
 
@@ -45,6 +56,10 @@ async def websocket_logs(websocket: WebSocket, execution_id: str):
 
     # Subscribe before starting loops
     hub.subscribe(execution_id, _on_log)
+    try:
+        logger.info(f"[logs-ws] Subscribed to execution_id={execution_id}")
+    except Exception:
+        pass
 
     # Send recent history first, mark as replay
     try:

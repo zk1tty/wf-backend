@@ -271,6 +271,9 @@ class RunEventsHub:
         run = await self.ensure_run(run_id)
         run.seq += 1
         event["runId"] = run_id
+        # Ensure schemaVersion for client compatibility
+        if "schemaVersion" not in event:
+            event["schemaVersion"] = 1
         event["seq"] = run.seq
         event["ts"] = int(time.time() * 1000)
         run.buffer.append(event)
@@ -285,6 +288,10 @@ class RunEventsHub:
                     asyncio.create_task(coro)
             except Exception as e:
                 logger.debug(f"RunEventsHub subscriber error: {e}")
+        try:
+            logger.debug(f"RunEventsHub published event type={event.get('type')} runId={run_id} seq={event.get('seq')} subscribers={len(callbacks)}")
+        except Exception:
+            pass
 
 
 # Global hub instance
