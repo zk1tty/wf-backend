@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BrowserFactory: Single responsibility browser lifecycle management
+BrowserFactory: Browser lifecycle management
 
 This class provides clean browser creation and management, replacing the scattered
 browser creation patterns throughout the codebase.
@@ -83,6 +83,14 @@ class BrowserFactory:
             try:
                 from .profile_manager import profile_manager as _pm
                 session_dir = _pm.get_session_dir(session_id)
+                # Kill any lingering Chromium processes referencing this session dir (pre-launch hardening)
+                try:
+                    killed = _pm.kill_chromium_processes_for_dir(session_dir)
+                    if killed:
+                        logger.info(f"Killed {killed} Chromium processes for session {session_id} pre-launch")
+                except Exception:
+                    pass
+                # Remove lock artifacts
                 _pm._remove_chromium_singleton_locks(session_dir)
             except Exception:
                 pass
@@ -372,6 +380,19 @@ class BrowserFactory:
             # First attempt failed; check if it's a lock/resource error and retry with a fresh temp profile
             err_text = str(e)
             logger.warning(f"Primary browser start failed for session {session_id}: {err_text}")
+
+            # Post-failure cleanup: kill lingering processes and remove locks for the session dir
+            try:
+                session_dir = profile_manager.get_session_dir(session_id)
+                try:
+                    killed = profile_manager.kill_chromium_processes_for_dir(session_dir)
+                    if killed:
+                        logger.info(f"Killed {killed} Chromium processes for session {session_id} after failed start")
+                except Exception:
+                    pass
+                profile_manager._remove_chromium_singleton_locks(session_dir)
+            except Exception:
+                pass
 
             should_retry = False
             try:

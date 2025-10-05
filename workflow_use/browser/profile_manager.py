@@ -80,6 +80,13 @@ class BrowserProfileManager:
         try:
             session_dir = self.base_session_dir / session_id
             if session_dir.exists():
+                # Kill any lingering zombieChromium processes using this session directory
+                try:
+                    killed = self.kill_chromium_processes_for_dir(session_dir)
+                    if killed:
+                        logger.info(f"Killed {killed} Chromium processes for session {session_id}")
+                except Exception as _e:
+                    logger.debug(f"Failed to kill Chromium processes for {session_id}: {_e}")
                 # Remove Chromium singleton lock artifacts if present
                 self._remove_chromium_singleton_locks(session_dir)
                 shutil.rmtree(session_dir, ignore_errors=True)
@@ -146,6 +153,42 @@ class BrowserProfileManager:
                 logger.info(f"Removed {removed} Chromium Singleton* lock files from {directory}")
         except Exception as e:
             logger.debug(f"Failed to remove singleton locks in {directory}: {e}")
+    
+    # Enhance post-failure cleanup
+    def kill_chromium_processes_for_dir(self, directory: Path) -> int:
+        """Kill Chromium/Chrome processes whose cmdline references the given directory.
+
+        Returns number of processes killed (best-effort). Falls back to pkill if psutil is unavailable.
+        """
+        killed_count = 0
+        dir_str = str(directory)
+        try:
+            import psutil  # type: ignore
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    name = (proc.info.get('name') or '').lower()
+                    if not name:
+                        continue
+                    if 'chrome' in name or 'chromium' in name:
+                        cmdline = proc.info.get('cmdline') or []
+                        if any(dir_str in (arg or '') for arg in cmdline):
+                            try:
+                                proc.kill()
+                                proc.wait(timeout=3)
+                                killed_count += 1
+                            except Exception:
+                                # Best-effort; continue attempting others
+                                continue
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+                    continue
+        except Exception:
+            # Fallback: try pkill by directory path match (may not report count)
+            try:
+                import subprocess  # type: ignore
+                subprocess.run(['pkill', '-f', dir_str], check=False, capture_output=True)
+            except Exception:
+                pass
+        return killed_count
     
     def get_user_profile_info(self, user_id: str) -> Dict[str, Any]:
         """
