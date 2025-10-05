@@ -219,7 +219,7 @@ class BrowserProfileManager:
                 '--disable-extensions',
                 '--disable-site-isolation-trials',
                 '--disable-site-isolation-for-policy',
-                '--disable-features=VizDisplayCompositor',
+                
                 '--disable-features=CORSMismatchKillSwitch',
                 '--disable-features=SameSiteByDefaultCookies',
                 '--disable-features=CookiesWithoutSameSiteMustBeSecure',
@@ -250,7 +250,7 @@ class BrowserProfileManager:
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
 				'--no-zygote',
-				'--renderer-process-limit=1',
+
                 '--disable-gpu',
                 '--disable-gpu-sandbox',
                 '--disable-background-timer-throttling',
@@ -278,8 +278,7 @@ class BrowserProfileManager:
                 '--force-device-scale-factor=1',
 
                 # PERFORMANCE OPTIMIZATIONS FOR RECORDING
-                '--disable-gpu-rasterization',
-                '--disable-gpu-compositing',
+                
                 '--disable-software-rasterizer',
 
                 # CRITICAL: MEMORY CAP
