@@ -275,7 +275,7 @@ class VisualWebSocketManager:
             })
 
         elif message_type == 'sequence_reset_request':
-            # Per-client sequence reset with optional small history replay
+            # Per-client sequence reset with optional small history replay (serve from buffer, no recorder restart)
             try:
                 history_window_seconds = float(message.get('history_window_seconds', 3.0))
             except Exception:
@@ -291,14 +291,15 @@ class VisualWebSocketManager:
                     except Exception as e:
                         logger.debug(f"Failed to mark sequence reset state: {e}")
 
-                # Attempt to force a fresh FullSnapshot from recorder (best-effort)
-                try:
-                    from workflow_use.browser.browser_factory import browser_factory
-                    recorder = await browser_factory.get_recorder_for_session(session_id)
-                    if recorder and hasattr(recorder, 'force_full_snapshot'):
-                        _ = await recorder.force_full_snapshot()
-                except Exception as e:
-                    logger.debug(f"force_full_snapshot attempt failed or unavailable: {e}")
+                # Serve the most recent buffered FullSnapshot directly to this client
+                sent = False
+                if streamer and hasattr(streamer, 'send_last_fullsnapshot_to_client'):
+                    try:
+                        sent = await streamer.send_last_fullsnapshot_to_client(connection.websocket, history_window_seconds=history_window_seconds)
+                    except Exception as e:
+                        logger.debug(f"send_last_fullsnapshot_to_client failed: {e}")
+                if not sent:
+                    logger.debug("No buffered FullSnapshot available to send")
 
                 # Acknowledge to client
                 await self.send_to_client(client_id, {
