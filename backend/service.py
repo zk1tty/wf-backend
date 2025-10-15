@@ -104,10 +104,8 @@ class WorkflowService:
 			if not row:
 				return None
 			state = decrypt_storage_state_row(row)
-			# Attach env metadata (if present) from upload row for downstream browser config
-			metadata = (row or {}).get("metadata") or {}
-			if metadata:
-				state["__envMetadata"] = metadata
+			# __envMetadata is already preserved by decrypt_storage_state_row()
+			# No need to overwrite it with database metadata field
 			return state
 		except Exception as e:
 			logger.info(f"No storage_state available for user {user_id}: {e}")
@@ -806,25 +804,53 @@ class WorkflowService:
 					
 
 					storage_state_data = None
+					storage_state_source = None
+					
 					# 0. Try latest verified DB record for this owner (guarded by FEATURE_USE_COOKIES)
 					try:
 						if os.getenv('FEATURE_USE_COOKIES', 'true').lower() == 'true':
 							storage_state_data = self._get_storage_state_for_user(owner_id)
 						if storage_state_data:
-							await self._write_log(log_file, f'[{self._get_timestamp()}] Loaded storage_state from DB for user {owner_id}\n')
+							storage_state_source = 'database'
+							# Log detailed info about loaded state
+							num_cookies = len(storage_state_data.get('cookies', []))
+							num_origins = len(storage_state_data.get('origins', []))
+							google_cookies = sum(1 for c in storage_state_data.get('cookies', []) if 'google.com' in c.get('domain', ''))
+							
+							# Get timestamp from env metadata if available
+							env_meta = storage_state_data.get('__envMetadata', {})
+							saved_at = env_meta.get('saved_at', 'unknown')
+							
+							await self._write_log(
+								log_file,
+								f'[{self._get_timestamp()}] 🔄 Loaded storage_state from DATABASE for user {owner_id}\n'
+								f'[{self._get_timestamp()}]    ├─ Cookies: {num_cookies} total ({google_cookies} Google)\n'
+								f'[{self._get_timestamp()}]    ├─ LocalStorage: {num_origins} origins\n'
+								f'[{self._get_timestamp()}]    └─ Saved at: {saved_at}\n'
+							)
 					except Exception as _e:
 						await self._write_warning_log(log_file, f'Failed to load storage_state from DB: {_e}')
 
 					# Fallback 1: legacy per-user file
 					if storage_state_data is None:
 						user_dir = Path.home() / '.browseruse' / 'profiles' / owner_id
-						print(f'[WorkflowService] User directory: {user_dir}')
 						user_storage_state_path = Path(user_dir) / 'storage_state.json'
 						if user_storage_state_path.exists():
 							with open(user_storage_state_path, 'r') as user_storage_file:
 								storage_state_data = json.load(user_storage_file)
+							storage_state_source = 'user_file'
+							
+							# Log detailed info
+							num_cookies = len(storage_state_data.get('cookies', []))
+							google_cookies = sum(1 for c in storage_state_data.get('cookies', []) if 'google.com' in c.get('domain', ''))
+							
+							await self._write_log(
+								log_file,
+								f'[{self._get_timestamp()}] 🔄 Loaded storage_state from USER_FILE\n'
+								f'[{self._get_timestamp()}]    ├─ Path: {user_storage_state_path}\n'
+								f'[{self._get_timestamp()}]    └─ Cookies: {num_cookies} total ({google_cookies} Google)\n'
+							)
 
-					# TODO: this fallback is no longer needed?
 					# Fallback 2: env or repo file
 					if storage_state_data is None:
 						import base64
@@ -832,15 +858,20 @@ class WorkflowService:
 							b64 = os.getenv('STORAGE_STATE_JSON_B64')
 							if b64:
 								storage_state_data = json.loads(base64.b64decode(b64).decode('utf-8'))
+								storage_state_source = 'environment'
+								await self._write_log(log_file, f'[{self._get_timestamp()}] 🔄 Loaded storage_state from ENVIRONMENT variable\n')
 							elif os.path.exists('storage_state.json'):
 								with open('storage_state.json', 'r') as _f:
 									storage_state_data = json.load(_f)
+								storage_state_source = 'root_file'
+								await self._write_log(log_file, f'[{self._get_timestamp()}] 🔄 Loaded storage_state from ROOT file (dev mode)\n')
 						except Exception as _e:
 							await self._write_warning_log(log_file, f'Failed to load storage_state from env/file: {_e}')
 
 					# If still None, proceed anonymously (fallback)
 					if storage_state_data is None:
-						await self._write_warning_log(log_file, 'No verified storage_state; Anonymous mode.')
+						await self._write_warning_log(log_file, '⚠️  No saved storage_state found; Starting anonymous session.\n')
+						await self._write_log(log_file, f'[{self._get_timestamp()}] User will need to login via Control Channel\n')
 
 					browser_for_workflow, rrweb_recorder = await browser_factory.create_browser_with_rrweb(
 						mode='visual',
@@ -1119,6 +1150,78 @@ class WorkflowService:
 					
 				except Exception as e:
 					await self._write_warning_log(log_file, f'Error stopping visual streaming: {e}\n')
+
+			# 🔄 AUTO-SAVE SESSION STATE: Capture cookies + localStorage before browser cleanup
+			if os.getenv('AUTO_SAVE_SESSION_STATE', 'true').lower() == 'true' and owner_id and session_id:
+				try:
+					await self._write_log(log_file, f'[{self._get_timestamp()}] 💾 Auto-saving session state...\n')
+					
+					from backend.storage_state_manager import storage_state_manager
+					from workflow_use.browser.browser_factory import browser_factory
+					
+					# Extract current session state
+					state = await browser_factory.extract_session_state(session_id)
+					
+					if state:
+						# Log what we captured
+						num_cookies = len(state.get('cookies', []))
+						num_origins = len(state.get('origins', []))
+						google_cookies = sum(1 for c in state.get('cookies', []) if 'google.com' in c.get('domain', ''))
+						
+						await self._write_log(
+							log_file,
+							f'[{self._get_timestamp()}] Captured: {num_cookies} cookies '
+							f'({google_cookies} Google), {num_origins} localStorage origins\n'
+						)
+						
+						# Validate Google cookies are present
+						validation = storage_state_manager.validate_google_cookie_completeness(state.get('cookies', []))
+						if validation.get('google_apex') and validation.get('google_docs'):
+							await self._write_log(log_file, f'[{self._get_timestamp()}] ✅ Google auth cookies validated\n')
+						else:
+							await self._write_warning_log(
+								log_file,
+								f'⚠️  Google cookies incomplete: {validation}\n'
+							)
+						
+						# Filter expired cookies
+						state['cookies'] = storage_state_manager.filter_expired_cookies(state['cookies'])
+						
+						# Save to database or user file
+						result = await storage_state_manager.save_storage_state_with_strategy(
+							user_id=owner_id,
+							state=state,
+							metadata={
+								'workflow_id': workflow_id,
+								'execution_id': execution_id,
+								'auto_saved': True,
+								'sites': ['google']  # For Google Sheets workflow
+							}
+						)
+						
+						target = result.get('target')
+						if target == 'database':
+							record_id = result.get('record_id')
+							verified = result.get('verified', {})
+							await self._write_log(
+								log_file,
+								f'[{self._get_timestamp()}] ✅ Saved to DATABASE: {record_id} '
+								f'(verified: {verified})\n'
+							)
+						elif target == 'user_file':
+							path = result.get('path')
+							await self._write_log(
+								log_file,
+								f'[{self._get_timestamp()}] ✅ Saved to USER_FILE: {path}\n'
+							)
+						else:
+							await self._write_warning_log(log_file, f'⚠️  Unknown save target: {target}\n')
+					else:
+						await self._write_warning_log(log_file, 'Failed to extract session state\n')
+				
+				except Exception as e:
+					await self._write_error_log(log_file, f'Auto-save session state failed: {e}\n')
+					# Don't fail the workflow if auto-save fails
 
 			# Cleanup browser instance (only if it's the regular browser, not the visual browser)
 			# Fix: Check if browser variable exists and is not None before using it

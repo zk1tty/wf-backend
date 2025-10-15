@@ -162,4 +162,10 @@ def decrypt_storage_state_row(row: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("invalid cookies format")
     if "origins" not in state:
         state["origins"] = []
-    return {"cookies": cookies, "origins": state.get("origins", [])}
+    
+    # Preserve __envMetadata if present (contains userAgent, timezone, viewport, etc.)
+    result = {"cookies": cookies, "origins": state.get("origins", [])}
+    if "__envMetadata" in state:
+        result["__envMetadata"] = state["__envMetadata"]
+    
+    return result
