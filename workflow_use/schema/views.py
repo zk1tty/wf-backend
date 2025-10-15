@@ -1,6 +1,6 @@
-from typing import List, Literal, Optional, Union
+from typing import Annotated, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, Discriminator
 
 
 # --- Base Step Model ---
@@ -125,6 +125,15 @@ class ClipboardCaptureStep(TimestampedWorkflowStep):
 	type: Literal['clipboard_capture']
 	output: Optional[str] = Field(None, description='Context key to store copiedText in.')
 
+
+class WaitStep(TimestampedWorkflowStep):
+	"""Wait/pause execution for human input or a specified duration."""
+
+	type: Literal['wait']
+	duration_seconds: Optional[int] = Field(None, description='Number of seconds to wait (if None, waits indefinitely for user to press Enter in terminal)')
+	message: Optional[str] = Field(None, description='Message to display while waiting')
+
+
 # --- Union of all possible step types ---
 # This Union defines what constitutes a valid step in the "steps" list.
 DeterministicWorkflowStep = Union[
@@ -139,16 +148,31 @@ DeterministicWorkflowStep = Union[
 	ClipboardCopyStep,
 	ClipboardPasteStep,
 	ClipboardCaptureStep,
+	WaitStep,
 ]
 
 AgenticWorkflowStep = AgentTaskWorkflowStep
 
 
-WorkflowStep = Union[
-	# Pure workflow
-	DeterministicWorkflowStep,
-	# Agentic
-	AgenticWorkflowStep,
+WorkflowStep = Annotated[
+	Union[
+		# Deterministic steps
+		NavigationStep,
+		ClickStep,
+		InputStep,
+		SelectChangeStep,
+		KeyPressStep,
+		ScrollStep,
+		PageExtractionStep,
+		ClickToCopyStep,
+		ClipboardCopyStep,
+		ClipboardPasteStep,
+		ClipboardCaptureStep,
+		WaitStep,
+		# Agentic
+		AgenticWorkflowStep,
+	],
+	Field(discriminator='type')
 ]
 
 allowed_controller_actions = []

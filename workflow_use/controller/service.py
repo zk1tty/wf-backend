@@ -21,7 +21,8 @@ from workflow_use.controller.views import (
 	ClickToCopyAction,
 	ClipboardCopyAction,
 	ClipboardPasteAction,
-    ClipboardCaptureAction,
+	ClipboardCaptureAction,
+	WaitAction,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ DISABLED_DEFAULT_ACTIONS = [
 	'search_google',
 	'go_to_url',  # I am using this action from the main controller to avoid duplication
 	'go_back',
-	'wait',
+	# 'wait',  # Now using our own custom wait implementation
 	'click_element_by_index',
 	'input_text',
 	'save_pdf',
@@ -467,5 +468,40 @@ class WorkflowController(Controller):
 				return ActionResult(extracted_content=text_value, include_in_memory=True)
 			except Exception as e:
 				error_msg = f'Failed to capture page clipboard: {e}'
+				logger.error(error_msg)
+				raise Exception(error_msg)
+
+		# Wait/pause action -----------------------------------------------------------
+		@self.registry.action(
+			'Wait for human input or pause execution for specified duration',
+			param_model=WaitAction,
+		)
+		async def wait(params: WaitAction, browser_session) -> ActionResult:
+			"""Wait for human input or pause for a specified duration."""
+			try:
+				message = params.message or "Waiting for human input..."
+				duration = params.duration_seconds
+				
+				logger.info(f'⏸️  {message}')
+				
+				if duration is not None and duration > 0:
+					# Wait for specified duration
+					logger.info(f'⏰  Waiting for {duration} seconds...')
+					await asyncio.sleep(duration)
+					msg = f'⏸️  Waited {duration} seconds'
+				else:
+					# Wait indefinitely (for human input in background mode)
+					# In production/cloud mode, use a reasonable timeout to prevent hanging
+					# Default to 60 seconds if running in background
+					default_timeout = 60
+					logger.info(f'⏸️  Waiting for up to {default_timeout} seconds (human input mode)...')
+					await asyncio.sleep(default_timeout)
+					msg = f'⏸️  Wait completed after {default_timeout} seconds'
+				
+				logger.info(msg)
+				return ActionResult(extracted_content=msg, include_in_memory=True)
+				
+			except Exception as e:
+				error_msg = f'Failed to wait: {str(e)}'
 				logger.error(error_msg)
 				raise Exception(error_msg)

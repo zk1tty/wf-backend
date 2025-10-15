@@ -113,3 +113,11 @@ class ClipboardCaptureAction(_BaseExtra):
 
 	type: Literal['clipboard_capture']
 	timeoutMs: Optional[int] = Field(5000, description='Max time to wait for non-empty clipboard text')
+
+
+class WaitAction(_BaseExtra):
+	"""Parameters for waiting/pausing execution."""
+
+	type: Literal['wait']
+	duration_seconds: Optional[int] = Field(None, description='Number of seconds to wait (if None, waits indefinitely)')
+	message: Optional[str] = Field(None, description='Message to display while waiting')
