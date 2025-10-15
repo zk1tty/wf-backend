@@ -69,14 +69,18 @@ RUN pip install typer==0.16.0
 RUN pip install gotrue==2.12.0
 RUN pip install PyJWT==2.10.1
 RUN pip install python-dotenv==1.1.0
+# Install Patchright BEFORE browser-use to ensure it's used as the playwright provider
+RUN pip install patchright==1.52.5
 RUN pip install browser-use==0.5.11
+# Uninstall playwright that browser-use installed, then reinstall specific version for patchright compatibility
+RUN pip uninstall -y playwright
+RUN pip install playwright==1.52.0
 RUN pip install langchain-openai==0.3.21
 RUN pip install langchain-core==0.3.64
 RUN pip install langchain==0.3.25
 RUN pip install requests==2.32.4
 RUN pip install pyperclip==1.9.0
 RUN pip install orjson==3.10.18
-RUN pip install patchright==1.52.5
 RUN pip install websockets==14.2
 RUN pip install psutil==7.0.0
 RUN pip install asyncio-mqtt==0.16.2
@@ -84,9 +88,9 @@ RUN pip install python-json-logger==3.3.0
 RUN pip install "pydantic[email]==2.11.7"
 RUN pip install redis==5.0.8
 
-# Install Playwright and browsers (CRITICAL for browser-use)
-RUN pip install playwright==1.52.0
-RUN playwright install chromium
+# Install Patchright (undetected Playwright) and browsers (CRITICAL for browser-use)
+# Note: patchright is already installed above in line 79
+RUN patchright install chromium
 
 # Copy application code
 COPY . .

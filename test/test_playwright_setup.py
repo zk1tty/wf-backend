@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script to verify Playwright setup and browser functionality
+Test script to verify Patchright setup and browser functionality
 """
 import asyncio
 import os
@@ -11,22 +11,22 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-def test_playwright_installation():
-    """Test if Playwright is properly installed"""
-    print("🔍 Testing Playwright installation...")
+def test_patchright_installation():
+    """Test if Patchright is properly installed"""
+    print("🔍 Testing Patchright installation...")
     
     try:
-        import playwright
+        import patchright
         # Try to get version, but don't fail if not available
         try:
             import pkg_resources
-            version = pkg_resources.get_distribution("playwright").version
-            print(f"✅ Playwright imported successfully - version: {version}")
+            version = pkg_resources.get_distribution("patchright").version
+            print(f"✅ Patchright imported successfully - version: {version}")
         except Exception:
-            print("✅ Playwright imported successfully")
+            print("✅ Patchright imported successfully")
         return True
     except ImportError as e:
-        print(f"❌ Playwright import failed: {e}")
+        print(f"❌ Patchright import failed: {e}")
         return False
 
 def test_browser_use_import():
@@ -42,11 +42,11 @@ def test_browser_use_import():
         print(f"❌ browser-use import failed: {e}")
         return False
 
-def check_playwright_browsers():
-    """Check if Playwright browsers are installed"""
-    print("🔍 Checking Playwright browser installation...")
+def check_patchright_browsers():
+    """Check if Patchright browsers are installed"""
+    print("🔍 Checking Patchright browser installation...")
     
-    # Common Playwright browser paths
+    # Common Patchright browser paths (same as Playwright)
     browser_paths = [
         "/root/.cache/ms-playwright/chromium-1169/chrome-linux/chrome",  # Production
         os.path.expanduser("~/.cache/ms-playwright/chromium-1169/chrome-linux/chrome"),  # Local Linux
@@ -57,12 +57,12 @@ def check_playwright_browsers():
     for path in browser_paths:
         if os.path.exists(path):
             found_browsers.append(path)
-            print(f"✅ Found Playwright Chromium at: {path}")
+            print(f"✅ Found Patchright Chromium at: {path}")
     
     if not found_browsers:
-        print("⚠️  No Playwright browsers found at common paths")
+        print("⚠️  No Patchright browsers found at common paths")
         
-        # Try to find any Playwright directory
+        # Try to find any Playwright directory (Patchright uses same paths)
         playwright_dirs = [
             "/root/.cache/ms-playwright",
             os.path.expanduser("~/.cache/ms-playwright"),
@@ -71,7 +71,7 @@ def check_playwright_browsers():
         
         for playwright_dir in playwright_dirs:
             if os.path.exists(playwright_dir):
-                print(f"📁 Playwright directory found: {playwright_dir}")
+                print(f"📁 Patchright directory found: {playwright_dir}")
                 try:
                     contents = os.listdir(playwright_dir)
                     print(f"   Contents: {contents}")
@@ -79,7 +79,7 @@ def check_playwright_browsers():
                     print(f"   Error listing contents: {e}")
                 break
         else:
-            print("❌ No Playwright directories found")
+            print("❌ No Patchright directories found")
             return False
     
     return len(found_browsers) > 0
@@ -129,7 +129,7 @@ async def test_browser_functionality(browser):
         print("✅ Got current page")
         
         # Navigate to a simple page
-        await page.goto("data:text/html,<html><body><h1>Playwright Test Success</h1></body></html>")
+        await page.goto("data:text/html,<html><body><h1>Patchright Test Success</h1></body></html>")
         print("✅ Navigation successful")
         
         # Get page title
@@ -151,11 +151,11 @@ async def test_browser_functionality(browser):
         return False
 
 async def main():
-    """Run all Playwright tests"""
-    print("🚀 Starting Playwright setup verification...\n")
+    """Run all Patchright tests"""
+    print("🚀 Starting Patchright setup verification...\n")
     
-    # Test 1: Playwright installation
-    playwright_ok = test_playwright_installation()
+    # Test 1: Patchright installation
+    patchright_ok = test_patchright_installation()
     print()
     
     # Test 2: browser-use import
@@ -163,7 +163,7 @@ async def main():
     print()
     
     # Test 3: Browser installation
-    browsers_ok = check_playwright_browsers()
+    browsers_ok = check_patchright_browsers()
     print()
     
     # Test 4: Browser creation
@@ -178,27 +178,27 @@ async def main():
     
     # Summary
     print("📋 Test Summary:")
-    print(f"  Playwright Installation: {'✅ PASS' if playwright_ok else '❌ FAIL'}")
+    print(f"  Patchright Installation: {'✅ PASS' if patchright_ok else '❌ FAIL'}")
     print(f"  browser-use Import: {'✅ PASS' if browser_use_ok else '❌ FAIL'}")
     print(f"  Browser Installation: {'✅ PASS' if browsers_ok else '❌ FAIL'}")
     print(f"  Browser Creation: {'✅ PASS' if creation_ok else '❌ FAIL'}")
     print(f"  Browser Functionality: {'✅ PASS' if functionality_ok else '❌ FAIL'}")
     
-    all_passed = all([playwright_ok, browser_use_ok, browsers_ok, creation_ok, functionality_ok])
+    all_passed = all([patchright_ok, browser_use_ok, browsers_ok, creation_ok, functionality_ok])
     print(f"\n🎯 Overall Result: {'✅ ALL TESTS PASSED' if all_passed else '❌ SOME TESTS FAILED'}")
     
     if all_passed:
-        print("\n🎉 Playwright setup is working correctly!")
+        print("\n🎉 Patchright setup is working correctly!")
         print("🚀 Ready for production deployment!")
     else:
         print("\n⚠️  Some tests failed. Common fixes:")
-        if not playwright_ok:
-            print("  - Install Playwright: pip install playwright")
+        if not patchright_ok:
+            print("  - Install Patchright: pip install patchright")
         if not browsers_ok:
-            print("  - Install browsers: playwright install chromium")
+            print("  - Install browsers: patchright install chromium")
         if not functionality_ok:
-            print("  - Check system dependencies: playwright install-deps chromium")
-        print("  - For production: ensure Dockerfile includes all Playwright setup steps")
+            print("  - Check system dependencies: patchright install-deps chromium")
+        print("  - For production: ensure Dockerfile includes all Patchright setup steps")
 
 if __name__ == "__main__":
     asyncio.run(main()) 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Playwright verification script for Railway deployment
+Patchright verification script for Railway deployment
 
-This script verifies that Playwright is properly installed and browsers are working
+This script verifies that Patchright is properly installed and browsers are working
 before starting the main application server. It's designed to fail fast if there
 are any browser-related issues in the production environment.
 """
@@ -13,16 +13,16 @@ import sys
 import time
 from pathlib import Path
 
-def test_playwright_installation():
-    """Test if Playwright is properly installed"""
-    print("🔍 Testing Playwright installation...")
+def test_patchright_installation():
+    """Test if Patchright is properly installed"""
+    print("🔍 Testing Patchright installation...")
     
     try:
-        import playwright
-        print("✅ Playwright imported successfully")
+        import patchright
+        print("✅ Patchright imported successfully")
         return True
     except ImportError as e:
-        print(f"❌ Playwright import failed: {e}")
+        print(f"❌ Patchright import failed: {e}")
         return False
 
 def test_browser_use_import():
@@ -161,7 +161,7 @@ async def test_browser_functionality(browser):
         print("✅ Got current page")
         
         # Navigate to a simple page
-        await page.goto("data:text/html,<html><body><h1>Playwright Test Success</h1></body></html>")
+        await page.goto("data:text/html,<html><body><h1>Patchright Test Success</h1></body></html>")
         print("✅ Navigation successful")
         
         # Get page title
@@ -220,8 +220,8 @@ async def main():
     is_production = check_environment()
     print()
     
-    # Test 1: Playwright installation
-    playwright_ok = test_playwright_installation()
+    # Test 1: Patchright installation
+    patchright_ok = test_patchright_installation()
     print()
     
     # Test 2: browser-use import
@@ -251,36 +251,36 @@ async def main():
     # Summary
     print("📋 Verification Summary:")
     print(f"  Environment: {'Production' if is_production else 'Development'}")
-    print(f"  Playwright Installation: {'✅ PASS' if playwright_ok else '❌ FAIL'}")
+    print(f"  Patchright Installation: {'✅ PASS' if patchright_ok else '❌ FAIL'}")
     print(f"  browser-use Import: {'✅ PASS' if browser_use_ok else '❌ FAIL'}")
     print(f"  Browser Installation: {'✅ PASS' if browsers_ok else '❌ FAIL'}")
     print(f"  Browser Creation: {'✅ PASS' if creation_ok else '❌ FAIL'}")
     print(f"  Browser Functionality: {'✅ PASS' if functionality_ok else '❌ FAIL'}")
     
     # Check critical vs non-critical tests
-    critical_tests = [playwright_ok, browser_use_ok, creation_ok]  # These must pass
+    critical_tests = [patchright_ok, browser_use_ok, creation_ok]  # These must pass
     non_critical_tests = [browsers_ok, functionality_ok]  # These can have warnings
     
     critical_passed = all(critical_tests)
-    all_passed = all([playwright_ok, browser_use_ok, browsers_ok, creation_ok, functionality_ok])
+    all_passed = all([patchright_ok, browser_use_ok, browsers_ok, creation_ok, functionality_ok])
     
     print(f"\n🎯 Overall Result: {'✅ ALL TESTS PASSED' if all_passed else '⚠️ SOME WARNINGS (but continuing)'}")
     
     if critical_passed:
-        print("\n🎉 Playwright verification successful!")
+        print("\n🎉 Patchright verification successful!")
         print("🚀 Ready to start application server!")
         print("📝 Note: Some warnings are expected in Railway environment")
         return True
     else:
-        print("\n❌ Playwright verification failed!")
+        print("\n❌ Patchright verification failed!")
         print("\n🔧 Common fixes for Railway deployment:")
-        if not playwright_ok:
-            print("  - Install Playwright: pip install playwright")
+        if not patchright_ok:
+            print("  - Install Patchright: pip install patchright")
         if not browsers_ok:
-            print("  - Install browsers: playwright install chromium")
+            print("  - Install browsers: patchright install chromium")
         if not functionality_ok:
-            print("  - Install dependencies: playwright install-deps chromium")
-        print("  - Check Dockerfile includes all Playwright setup steps")
+            print("  - Install dependencies: patchright install-deps chromium")
+        print("  - Check Dockerfile includes all Patchright setup steps")
         print("  - Verify xvfb is running for headless browser support")
         return False
 
