@@ -178,6 +178,9 @@ async def upload_storage_state(request: Request):
         item = {"name": name, "value": value, "domain": domain, "path": path, "expires": expires,
                 "httpOnly": bool(c.get("httpOnly", False)), "secure": bool(c.get("secure", False)),
                 "sameSite": _norm_samesite(c.get("sameSite"))}
+        # Preserve CHIPS partitionKey if provided
+        if isinstance(c.get("partitionKey"), dict):
+            item["partitionKey"] = {k: v for k, v in c.get("partitionKey").items() if k in ("topLevelSite","hasCrossSiteAncestor","partitionKey") and v is not None}
         key = (item["domain"].lower(), item["path"], item["name"]) 
         prev = dedup.get(key)
         if not prev or (item["expires"] or 0) > (prev.get("expires") or 0):

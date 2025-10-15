@@ -22,10 +22,22 @@ import logging
 import os
 import shutil
 import tempfile
+import sys
 from typing import Optional, Tuple, Callable, Dict, Any, List
+
+# CRITICAL: Monkey-patch to use Patchright instead of Playwright
+# This must happen BEFORE importing browser_use
+import patchright.async_api
+import playwright.async_api
+# Replace playwright's async_playwright with patchright's version
+playwright.async_api.async_playwright = patchright.async_api.async_playwright
+logger_init = logging.getLogger(__name__)
+logger_init.info("🔧 Monkey-patched playwright.async_api.async_playwright to use patchright")
+
 from browser_use import Browser
 from browser_use.browser import BrowserProfile
-from playwright.async_api import Page
+from patchright.async_api import Page
+from urllib.parse import urlparse
 
 from .profile_manager import profile_manager
 from .custom_screensaver import show_custom_dvd_screensaver
@@ -46,6 +58,8 @@ class BrowserFactory:
         """Initialize the browser factory."""
         self._active_sessions: Dict[str, Dict[str, Any]] = {}
         logger.info("BrowserFactory initialized")
+        # Track cookie logging state per session to avoid noisy duplicates
+        self._cookie_log_state: Dict[str, Dict[str, bool]] = {}
     
     async def create_browser_with_rrweb(
         self, 
@@ -95,20 +109,68 @@ class BrowserFactory:
             except Exception:
                 pass
 
+            # Prepare env context overrides from storage_state metadata (if provided)
+            context_overrides: Dict[str, Any] = {}
+            try:
+                if storage_state and isinstance(storage_state, dict) and storage_state.get("__envMetadata"):
+                    env = (storage_state.get("__envMetadata") or {}).get("env") or {}
+                    # Accept-Language from languages list
+                    languages = env.get("languages") or []
+                    accept_lang = None
+                    if isinstance(languages, list) and languages:
+                        parts = []
+                        for idx, lang in enumerate(languages[:4]):
+                            if idx == 0:
+                                parts.append(str(lang))
+                            else:
+                                q = max(0.1, 1.0 - 0.1 * idx)
+                                parts.append(f"{lang};q={q:.1f}")
+                        accept_lang = ",".join(parts)
+                    # Map env -> Playwright context options
+                    user_agent = env.get("userAgent")
+                    if user_agent:
+                        context_overrides["user_agent"] = user_agent
+                    locale = env.get("language") or env.get("locale")
+                    if locale:
+                        context_overrides["locale"] = locale
+                    tz = env.get("timezone") or env.get("timezoneId")
+                    if tz:
+                        context_overrides["timezone_id"] = tz
+                    viewport = env.get("viewport") or {}
+                    if isinstance(viewport, dict):
+                        w = viewport.get("width"); h = viewport.get("height")
+                        if isinstance(w, int) and isinstance(h, int):
+                            context_overrides["viewport"] = {"width": w, "height": h}
+                    dpr = env.get("devicePixelRatio") or env.get("deviceScaleFactor")
+                    if isinstance(dpr, (int, float)):
+                        context_overrides["device_scale_factor"] = float(dpr)
+                    if accept_lang:
+                        context_overrides["extra_http_headers"] = {"Accept-Language": accept_lang}
+            except Exception as _e:
+                logger.warning(f"Failed to derive env overrides for session {session_id}: {_e}")
+
             # Step 1: Create browser instance (with fallback if profile is locked/EAGAIN)
             browser, temp_profile_dir = await self._create_browser_instance(
                 session_id=session_id,
                 user_id=user_id,
-                headless=headless
+                headless=headless,
+                context_overrides=context_overrides or None
             )
             
             # Step 2: Get the browser page
             page = await self._get_browser_page(browser, session_id)
 
+            # Step 2.25: Log env overrides application (applied at context creation time)
+            try:
+                if context_overrides:
+                    logger.info(f"Applied env metadata at context creation for session {session_id}: {list(context_overrides.keys())}")
+            except Exception:
+                pass
+
             # Step 2.5: Apply storage state (cookies + localStorage init) if provided
             if storage_state:
                 try:
-                    await self._apply_storage_state(page, storage_state)
+                    await self._apply_storage_state(page, storage_state, session_id)
                     logger.info(f"Applied storage state for session {session_id}")
                 except Exception as e:
                     logger.warning(f"Failed to apply storage state for session {session_id}: {e}")
@@ -138,6 +200,12 @@ class BrowserFactory:
                 'temp_profile_dir': temp_profile_dir,
             }
             
+            # Install optional cookie verification logger for Google flows
+            try:
+                await self._install_google_cookie_logger(page, session_id)
+            except Exception as _e:
+                logger.debug(f"Cookie logger setup skipped: {_e}")
+
             logger.info(f"✅ Browser+Recorder created successfully for session {session_id}")
             return browser, recorder
             
@@ -147,7 +215,7 @@ class BrowserFactory:
             await self._cleanup_failed_creation(session_id)
             raise RuntimeError(f"Browser creation failed for session {session_id}: {e}")
 
-    async def _apply_storage_state(self, page: Page, storage_state: Dict[str, Any]) -> None:
+    async def _apply_storage_state(self, page: Page, storage_state: Dict[str, Any], session_id: str) -> None:
         """Apply cookies and localStorage-like values to the current context/page.
 
         Notes:
@@ -172,12 +240,37 @@ class BrowserFactory:
                 # sameSite is optional; include only if present and valid
                 if 'sameSite' in c and c['sameSite'] in ['Lax', 'Strict', 'None']:
                     cookie['sameSite'] = c['sameSite']
+                # Preserve partitionKey for CHIPS fidelity if provided
+                if isinstance(c.get('partitionKey'), dict):
+                    cookie['partitionKey'] = c['partitionKey']
                 cookies.append(cookie)
             except KeyError:
                 continue
 
         if cookies:
-            await page.context.add_cookies(cookies)
+            # Log Google cookie count before applying
+            google_cookies = [c for c in cookies if 'google.com' in c.get('domain', '')]
+            logger.info(f"[CookieDebug] Applying {len(cookies)} total cookies, {len(google_cookies)} for Google domains")
+            
+            # Log specific critical cookies
+            critical = ['SID', 'SIDCC', 'APISID', 'HSID', 'LSID', '__Host-GAPS']
+            found_critical = {name: any(c['name'] == name for c in google_cookies) for name in critical}
+            logger.info(f"[CookieDebug] Critical cookies in storage_state: {found_critical}")
+            
+            # Try a different approach: set cookies after initial navigation to avoid Google's anti-bot detection
+            logger.info(f"[CookieDebug] Deferring cookie application to avoid anti-bot detection")
+            
+            # Store cookies for later application
+            if not hasattr(self, '_pending_cookies'):
+                self._pending_cookies = {}
+            self._pending_cookies[session_id] = cookies
+            
+            # Also try immediate application as fallback
+            try:
+                await page.context.add_cookies(cookies)
+                logger.info(f"[CookieDebug] Applied {len(cookies)} cookies immediately as fallback")
+            except Exception as e:
+                logger.warning(f"[CookieDebug] Immediate cookie application failed: {e}")
 
         # Prepare localStorage init mapping
         origin_to_kv: Dict[str, Dict[str, str]] = {}
@@ -344,7 +437,8 @@ class BrowserFactory:
         self,
         session_id: str,
         user_id: Optional[str] = None,
-        headless: bool = True
+        headless: bool = True,
+        context_overrides: Optional[Dict[str, Any]] = None
     ) -> Tuple[Browser, Optional[str]]:
         """
         Create the actual browser instance with profile.
@@ -367,6 +461,10 @@ class BrowserFactory:
             logger.debug(f"Using profile config for session {session_id}")
             
             # Create browser with profile
+            # If context_overrides are provided, pass them through to BrowserProfile
+            # These map to Playwright's new_context options in browser-use
+            if context_overrides:
+                config.update(context_overrides)
             profile = BrowserProfile(**config)
             browser = Browser(browser_profile=profile)
             
@@ -470,6 +568,117 @@ class BrowserFactory:
         except Exception as e:
             logger.error(f"Failed to get browser page for session {session_id}: {e}")
             raise RuntimeError(f"Page retrieval failed: {e}")
+
+    # ──────────────────────────────────────────────────────────────────────────────
+    # Cookie presence logger for Google flows (optional, controlled by env)
+    # ──────────────────────────────────────────────────────────────────────────────
+    async def _install_google_cookie_logger(self, page: Page, session_id: str) -> None:
+        if os.getenv('GOOGLE_COOKIE_DEBUG_LOG', 'true').lower() != 'true':
+            return
+        self._cookie_log_state.setdefault(session_id, {"apex_logged": False, "docs_logged": False})
+
+        async def analyze(url: str):
+            try:
+                host = (urlparse(url).hostname or '').lower()
+                if not host:
+                    return
+                if not self._cookie_log_state.get(session_id):
+                    self._cookie_log_state[session_id] = {"apex_logged": False, "docs_logged": False}
+
+                # Fetch cookies via CDP for full fidelity
+                cdp = await page.context.new_cdp_session(page)
+                all_cookies = (await cdp.send('Network.getAllCookies')).get('cookies', [])
+
+                def names_for(domain: str) -> List[str]:
+                    return sorted(list({c.get('name') for c in all_cookies if c.get('domain') == domain}))
+
+                # Apply pending cookies after Google navigation using CDP for better stealth
+                if ('google.com' in host) and hasattr(self, '_pending_cookies') and session_id in self._pending_cookies:
+                    try:
+                        pending_cookies = self._pending_cookies[session_id]
+                        
+                        # Try CDP approach for critical Google cookies
+                        cdp = await page.context.new_cdp_session(page)
+                        google_cookies = [c for c in pending_cookies if 'google.com' in c.get('domain', '')]
+                        
+                        for cookie in google_cookies:
+                            try:
+                                # Use CDP to set cookies directly
+                                await cdp.send('Network.setCookie', {
+                                    'name': cookie['name'],
+                                    'value': cookie['value'],
+                                    'domain': cookie.get('domain', ''),
+                                    'path': cookie.get('path', '/'),
+                                    'expires': cookie.get('expires', 0),
+                                    'httpOnly': cookie.get('httpOnly', False),
+                                    'secure': cookie.get('secure', True),
+                                    'sameSite': cookie.get('sameSite', 'Lax')
+                                })
+                            except Exception as cookie_error:
+                                logger.debug(f"[CookieDebug] Failed to set {cookie['name']} via CDP: {cookie_error}")
+                        
+                        await cdp.detach()
+                        
+                        # Also try the standard approach
+                        await page.context.add_cookies(pending_cookies)
+                        
+                        logger.info(f"[CookieDebug] Applied {len(google_cookies)} Google cookies via CDP + {len(pending_cookies)} total via context")
+                        del self._pending_cookies[session_id]
+                        
+                        # Wait for cookies to settle
+                        await asyncio.sleep(2)
+                        
+                    except Exception as e:
+                        logger.error(f"[CookieDebug] Failed to apply deferred cookies: {e}")
+
+                # After google.com hop: check apex cookies
+                if ('google.com' in host) and (not self._cookie_log_state[session_id]["apex_logged"]):
+                    apex = names_for('.google.com') + names_for('google.com') + names_for('www.google.com')
+                    present = {n: (n in apex) for n in ['SID', 'SIDCC', 'APISID']}
+                    
+                    # Log all cookies found on google.com domains for debugging
+                    google_domains = ['.google.com', 'google.com', 'www.google.com']
+                    all_google_cookies = [c for c in all_cookies if c.get('domain') in google_domains]
+                    logger.info(f"[GoogleCookieCheck] All cookies on google.com domains: {[(c['name'], c['domain']) for c in all_google_cookies]}")
+                    
+                    # Check if the cookies we set are actually there
+                    for name in ['SID', 'SIDCC', 'APISID']:
+                        cookie = next((c for c in all_google_cookies if c['name'] == name), None)
+                        if cookie:
+                            logger.info(f"[GoogleCookieCheck] {name} found: domain={cookie.get('domain')}, secure={cookie.get('secure')}, httpOnly={cookie.get('httpOnly')}, sameSite={cookie.get('sameSite')}")
+                        else:
+                            logger.warning(f"[GoogleCookieCheck] {name} NOT FOUND in browser cookies!")
+                    
+                    logger.info(f"[GoogleCookieCheck] Apex .google.com after navigation: {present}")
+                    self._cookie_log_state[session_id]["apex_logged"] = True
+
+                # After docs: check OSID
+                if ('docs.google.com' in host) and (not self._cookie_log_state[session_id]["docs_logged"]):
+                    docs = names_for('.docs.google.com') + names_for('docs.google.com')
+                    has_osid = ('OSID' in docs) or ('__Secure-OSID' in docs)
+                    logger.info(f"[GoogleCookieCheck] Docs cookies after navigation: OSID present={has_osid}")
+                    if has_osid:
+                        logger.info("[GoogleCookieCheck] ✅ Docs OSID detected — safe to persist cloud profile and stop re-copying Google cookies for this user.")
+                    self._cookie_log_state[session_id]["docs_logged"] = True
+            except Exception as _e:
+                logger.debug(f"Cookie analysis error: {_e}")
+
+        def on_framenavigated(frame):
+            try:
+                url = getattr(frame, 'url', '')
+                if url:
+                    asyncio.create_task(analyze(url))
+            except Exception:
+                pass
+
+        # Hook navigation handler
+        page.on('framenavigated', on_framenavigated)
+
+        # Also analyze current URL immediately
+        try:
+            await analyze(await page.evaluate("() => location.href"))
+        except Exception:
+            pass
     
     async def _setup_screensaver(self, page: Page, session_id: str) -> None:
         """

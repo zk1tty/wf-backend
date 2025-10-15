@@ -104,6 +104,10 @@ class WorkflowService:
 			if not row:
 				return None
 			state = decrypt_storage_state_row(row)
+			# Attach env metadata (if present) from upload row for downstream browser config
+			metadata = (row or {}).get("metadata") or {}
+			if metadata:
+				state["__envMetadata"] = metadata
 			return state
 		except Exception as e:
 			logger.info(f"No storage_state available for user {user_id}: {e}")

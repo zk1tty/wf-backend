@@ -189,6 +189,8 @@ data/
 .config.pkl
 *.pdf
 
+# User Session key:
+storage_state.json
 user_data_dir
 
 # pyenv bin
