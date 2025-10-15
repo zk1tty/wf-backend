@@ -170,10 +170,28 @@ class BrowserFactory:
             # Step 2.5: Apply storage state (cookies + localStorage init) if provided
             if storage_state:
                 try:
+                    # Log what we're about to apply
+                    num_cookies = len(storage_state.get('cookies', []))
+                    num_origins = len(storage_state.get('origins', []))
+                    google_cookies = sum(1 for c in storage_state.get('cookies', []) if 'google.com' in c.get('domain', ''))
+                    
+                    # Get metadata if available
+                    env_meta = storage_state.get('__envMetadata', {}).get('env', {})
+                    user_agent = env_meta.get('userAgent', 'N/A')[:60] + '...' if env_meta.get('userAgent') else 'N/A'
+                    timezone = env_meta.get('timezone', 'N/A')
+                    
+                    logger.info(
+                        f"📦 Applying storage state for session {session_id}:\n"
+                        f"   ├─ Cookies: {num_cookies} total ({google_cookies} Google)\n"
+                        f"   ├─ LocalStorage: {num_origins} origins\n"
+                        f"   ├─ User-Agent: {user_agent}\n"
+                        f"   └─ Timezone: {timezone}"
+                    )
+                    
                     await self._apply_storage_state(page, storage_state, session_id)
-                    logger.info(f"Applied storage state for session {session_id}")
+                    logger.info(f"✅ Successfully applied storage state for session {session_id}")
                 except Exception as e:
-                    logger.warning(f"Failed to apply storage state for session {session_id}: {e}")
+                    logger.warning(f"❌ Failed to apply storage state for session {session_id}: {e}")
             
             # Step 3: Show screensaver (for visual modes)
             if mode == 'visual':
@@ -250,12 +268,25 @@ class BrowserFactory:
         if cookies:
             # Log Google cookie count before applying
             google_cookies = [c for c in cookies if 'google.com' in c.get('domain', '')]
-            logger.info(f"[CookieDebug] Applying {len(cookies)} total cookies, {len(google_cookies)} for Google domains")
+            logger.info(f"[CookieApply] Applying {len(cookies)} total cookies, {len(google_cookies)} for Google domains to session {session_id}")
             
-            # Log specific critical cookies
-            critical = ['SID', 'SIDCC', 'APISID', 'HSID', 'LSID', '__Host-GAPS']
-            found_critical = {name: any(c['name'] == name for c in google_cookies) for name in critical}
-            logger.info(f"[CookieDebug] Critical cookies in storage_state: {found_critical}")
+            # Log specific critical cookies with expiry info
+            critical = ['SID', 'SIDCC', 'APISID', 'HSID', 'LSID', '__Host-GAPS', 'OSID']
+            found_critical = {}
+            for name in critical:
+                cookie = next((c for c in google_cookies if c['name'] == name), None)
+                if cookie:
+                    import time
+                    expires = cookie.get('expires', -1)
+                    if expires > 0:
+                        days_until_expiry = (expires - time.time()) / 86400
+                        found_critical[name] = f"✓ (expires in {days_until_expiry:.1f} days)"
+                    else:
+                        found_critical[name] = "✓ (session)"
+                else:
+                    found_critical[name] = "✗"
+            
+            logger.info(f"[CookieApply] Critical Google cookies status: {found_critical}")
             
             # Try a different approach: set cookies after initial navigation to avoid Google's anti-bot detection
             logger.info(f"[CookieDebug] Deferring cookie application to avoid anti-bot detection")
@@ -281,6 +312,12 @@ class BrowserFactory:
                 origin_to_kv[origin] = {item.get('name'): item.get('value') for item in kv_list if 'name' in item and 'value' in item}
 
         if origin_to_kv:
+            # Log localStorage being injected
+            total_items = sum(len(items) for items in origin_to_kv.values())
+            logger.info(f"[LocalStorageApply] Injecting localStorage for {len(origin_to_kv)} origins ({total_items} items total)")
+            for origin, items in origin_to_kv.items():
+                logger.info(f"[LocalStorageApply]   └─ {origin}: {len(items)} items")
+            
             # Inject an init script that sets localStorage for matching origin as early as possible
             import json as _json
             mapping_json = _json.dumps(origin_to_kv)
@@ -428,6 +465,118 @@ class BrowserFactory:
         """Get recorder instance for a session"""
         session_info = self._active_sessions.get(session_id)
         return session_info.get('recorder') if session_info else None
+    
+    async def extract_session_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Extract current browser state (cookies + localStorage + env metadata).
+        
+        This captures the complete state needed to resume a session later:
+        - All cookies from the browser context
+        - localStorage for current page origin
+        - Environment metadata (user agent, timezone, viewport, etc.)
+        
+        Args:
+            session_id: Session to extract state from
+            
+        Returns:
+            Dict with keys: 'cookies', 'origins', '__envMetadata'
+            None if session not found or extraction fails
+        """
+        session_info = self._active_sessions.get(session_id)
+        if not session_info:
+            logger.warning(f"Session {session_id} not found for state extraction")
+            return None
+        
+        try:
+            browser = session_info.get('browser')
+            if not browser:
+                logger.error(f"Browser not available for session {session_id}")
+                return None
+            
+            page = await browser.get_current_page()
+            if not page:
+                logger.error(f"Page not available for session {session_id}")
+                return None
+            
+            # 1. Extract cookies via Playwright context
+            # Note: Per test results, this does NOT capture partitionKey,
+            # but Google doesn't use CHIPS partitioning, so this is sufficient
+            cookies = await page.context.cookies()
+            logger.info(f"Extracted {len(cookies)} cookies from session {session_id}")
+            
+            # 2. Extract localStorage for current origin
+            # Note: This only captures localStorage from the current page's origin
+            # Multi-origin capture would require navigating to each domain
+            origins_data = await page.evaluate("""
+                () => {
+                    const origins = [];
+                    
+                    // Current frame
+                    try {
+                        const origin = window.location.origin;
+                        const localStorage = [];
+                        for (let i = 0; i < window.localStorage.length; i++) {
+                            const key = window.localStorage.key(i);
+                            localStorage.push({
+                                name: key,
+                                value: window.localStorage.getItem(key)
+                            });
+                        }
+                        if (localStorage.length > 0) {
+                            origins.push({origin, localStorage});
+                        }
+                    } catch (e) {
+                        console.error('Failed to extract localStorage:', e);
+                    }
+                    
+                    return origins;
+                }
+            """)
+            
+            if origins_data and len(origins_data) > 0:
+                logger.info(
+                    f"Extracted localStorage from {len(origins_data)} origins "
+                    f"({sum(len(o.get('localStorage', [])) for o in origins_data)} items)"
+                )
+            
+            # 3. Extract environment metadata
+            # This helps preserve browser fingerprint across sessions
+            env_metadata = await page.evaluate("""
+                () => ({
+                    userAgent: navigator.userAgent,
+                    language: navigator.language,
+                    languages: navigator.languages,
+                    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                    viewport: {
+                        width: window.innerWidth,
+                        height: window.innerHeight
+                    },
+                    devicePixelRatio: window.devicePixelRatio
+                })
+            """)
+            
+            logger.info(f"Extracted environment metadata for session {session_id}")
+            
+            # 4. Assemble complete state
+            state = {
+                "cookies": cookies,
+                "origins": origins_data,
+                "__envMetadata": {"env": env_metadata}
+            }
+            
+            # Log summary
+            google_cookies = sum(1 for c in cookies if 'google.com' in c.get('domain', ''))
+            logger.info(
+                f"✅ Successfully extracted session state: "
+                f"{len(cookies)} cookies ({google_cookies} Google), "
+                f"{len(origins_data)} origins with localStorage"
+            )
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Failed to extract session state for {session_id}: {e}")
+            return None
     
     # ===================================================================
     # PRIVATE METHODS: Browser Creation Steps
