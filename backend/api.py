@@ -18,6 +18,7 @@ from backend.service_factory import get_service
 from backend.routers import db_wf_router
 from backend.routers_local import local_wf_router
 from backend.routers_visual import visual_router
+from backend.routers_control import control_router
 from backend.routers_logs import logs_router
 from backend.routers_runs import runs_router
 from backend.dependencies import validate_session_token, get_current_user, supabase
@@ -139,17 +140,17 @@ async def cors_debug_middleware(request: Request, call_next):
     import logging
     logger = logging.getLogger(__name__)
     
-    # Log CORS-related headers
+    # Log CORS-related headers (DEBUG level to reduce noise)
     origin = request.headers.get("origin")
     if origin:
-        logger.info(f"CORS request from origin: {origin}")
+        logger.debug(f"CORS request from origin: {origin}")
     
     response = await call_next(request)
     
-    # Log CORS response headers
+    # Log CORS response headers (DEBUG level to reduce noise)
     cors_headers = {k: v for k, v in response.headers.items() if 'access-control' in k.lower()}
     if cors_headers:
-        logger.info(f"CORS response headers: {cors_headers}")
+        logger.debug(f"CORS response headers: {cors_headers}")
     
     return response
 #------------------------------------------------
@@ -183,7 +184,7 @@ try:
     broadcast_handler = LogBroadcastHandler(level=logging.INFO)
 
     attached = {}
-    for name in ['browser_use', 'workflow_use']:
+    for name in ['browser_use', 'workflow_use', 'backend']:
         ns_logger = logging.getLogger(name)
         ns_logger.setLevel(logging.INFO)
         # Avoid duplicate handlers if reloaded
@@ -398,6 +399,7 @@ app.include_router(auth_router)
 app.include_router(local_wf_router)
 app.include_router(db_wf_router)
 app.include_router(visual_router)
+app.include_router(control_router)
 app.include_router(logs_router)
 app.include_router(runs_router)
 app.include_router(storage_state_router)

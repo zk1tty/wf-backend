@@ -29,6 +29,16 @@ ESSENTIAL_OPTIONS = {
     "maskTextClass": "rr-mask",
     "maskAllInputs": False,              # Official default: false
     
+    # 🔒 SECURITY: Smart masking for Control Channel
+    # Masks password fields only, shows other inputs for debugging
+    "maskInputOptions": {
+        "password": True,                # ✅ Always mask password fields
+        "email": False,                  # Show email addresses
+        "tel": False,                    # Show phone numbers  
+        "text": False,                   # Show text inputs
+        "textarea": False,               # Show textarea content
+    },
+    
     # 🎯 CRITICAL CSP BYPASS OPTIONS FOR COMPLEX SPAS
     "inlineStylesheet": True,            # CRITICAL - fixes CSS serialization in iframe
     "collectFonts": True,                # Inline fonts to prevent CORS/CSP issues
@@ -97,8 +107,13 @@ def get_recording_options_js() -> str:
         elif isinstance(obj, dict):
             items = [f'"{k}": {py_to_js(v)}' for k, v in obj.items()]
             return "{" + ", ".join(items) + "}"
+        elif isinstance(obj, list):
+            items = [py_to_js(item) for item in obj]
+            return "[" + ", ".join(items) + "]"
         elif isinstance(obj, str):
             return f'"{obj}"'
+        elif isinstance(obj, (int, float)):
+            return str(obj)
         else:
             return str(obj)
     

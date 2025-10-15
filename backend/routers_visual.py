@@ -10,11 +10,15 @@ from .views import (
 )
 from .execution_history_service import get_execution_history_service
 from .dependencies import supabase
+from .logging_broadcast import LogBroadcastHub
 
 logger = logging.getLogger(__name__)
 
 # Visual streaming router with dedicated API prefix
 visual_router = APIRouter(prefix='/workflows/visual')
+
+# Get global log broadcast hub for Control Channel event logging
+log_hub = LogBroadcastHub.get_global()
 
 
 @visual_router.websocket("/{session_id}/stream")
@@ -77,7 +81,7 @@ async def visual_streaming_websocket(websocket: WebSocket, session_id: str):
                             "session_id": session_id
                         })
                     elif message_type == "sequence_reset_request":
-                        # Per-client sequence reset: mark state and try to force a fresh FullSnapshot
+                        # Per-client sequence reset: mark state and serve buffered FullSnapshot to this client
                         try:
                             hist = float(message.get("history_window_seconds", 3.0))
                         except Exception:
@@ -85,14 +89,15 @@ async def visual_streaming_websocket(websocket: WebSocket, session_id: str):
                         # Mark reset for this websocket
                         if hasattr(streamer, 'mark_sequence_reset_for_client'):
                             streamer.mark_sequence_reset_for_client(websocket, history_window_seconds=hist)
-                        # Try to force a fresh FullSnapshot from the running recorder
+                        # Serve the most recent buffered FullSnapshot to this client without restarting rrweb
                         try:
-                            from workflow_use.browser.browser_factory import browser_factory
-                            recorder = await browser_factory.get_recorder_for_session(session_id)
-                            if recorder and hasattr(recorder, 'force_full_snapshot'):
-                                _ = await recorder.force_full_snapshot()
+                            sent = False
+                            if hasattr(streamer, 'send_last_fullsnapshot_to_client'):
+                                sent = await streamer.send_last_fullsnapshot_to_client(websocket, history_window_seconds=hist)
+                            if not sent:
+                                logger.debug("No buffered FullSnapshot available to send")
                         except Exception as _e:
-                            logger.debug(f"force_full_snapshot attempt failed or unavailable: {_e}")
+                            logger.debug(f"send_last_fullsnapshot_to_client failed: {_e}")
                         # Acknowledge request
                         await websocket.send_json({
                             "type": "sequence_reset_ack",
