@@ -242,8 +242,10 @@ class RRWebEventStreamer:
             # Broadcast to all connected clients with optional per-client sequence reset
             disconnected_clients = set()
             successful_sends = 0
+            # Iterate over a snapshot to avoid 'Set changed size during iteration'
+            clients_snapshot = list(self.connected_clients)
             
-            for client in self.connected_clients:
+            for client in clients_snapshot:
                 try:
                     sent = await self._send_event_to_client_with_reset_logic(client, event)
                     if sent:
@@ -261,6 +263,91 @@ class RRWebEventStreamer:
         except Exception as e:
             logger.error(f"Error broadcasting event: {e}")
             return 0
+    
+    async def send_last_fullsnapshot_to_client(self, websocket, history_window_seconds: float = 0.5) -> bool:
+        """Send the most recent FullSnapshot (and nearby metadata/incrementals) to a specific client.
+
+        - Does NOT restart rrweb in the browser. Purely serves from buffer.
+        - Sends a Meta (type 4) if found just before the FullSnapshot, then the FullSnapshot with sequence 0/1.
+        - Optionally replays a short window of IncrementalSnapshot events after FS.
+        """
+        try:
+            # Find latest FullSnapshot
+            fs_index = None
+            for i in range(len(self.event_buffer) - 1, -1, -1):
+                candidate = self.event_buffer[i]
+                if isinstance(candidate, RRWebEvent) and isinstance(candidate.event, dict) and candidate.event.get('type') == 2:
+                    fs_index = i
+                    break
+            if fs_index is None:
+                return False
+
+            # Try to find a Meta event just before FS
+            meta_event = None
+            for j in range(fs_index - 1, max(-1, fs_index - 50), -1):
+                candidate = self.event_buffer[j]
+                if isinstance(candidate, RRWebEvent) and isinstance(candidate.event, dict) and candidate.event.get('type') == 4:
+                    meta_event = candidate
+                    break
+
+            # Initialize/reset per-client sequence state
+            state = self._client_reset_state.get(websocket, {})
+            state['waiting_for_fullsnapshot'] = False
+            state['reset_offset'] = self.event_buffer[fs_index].sequence_id
+            state['fullsnapshot_timestamp'] = self.event_buffer[fs_index].timestamp
+            self._client_reset_state[websocket] = state
+
+            # Send Meta first (sequence 0) if available
+            client_seq_offset = 0
+            if meta_event is not None:
+                ok = await self._safe_send_to_client(websocket, {
+                    'type': 'rrweb_event',
+                    'session_id': meta_event.session_id,
+                    'timestamp': meta_event.timestamp,
+                    'event': meta_event.event,
+                    'sequence_id': 0,
+                })
+                if not ok:
+                    return False
+                client_seq_offset = 1
+
+            # Send the FullSnapshot as next sequence
+            fs_event = self.event_buffer[fs_index]
+            ok = await self._safe_send_to_client(websocket, {
+                'type': 'rrweb_event',
+                'session_id': fs_event.session_id,
+                'timestamp': fs_event.timestamp,
+                'event': fs_event.event,
+                'sequence_id': client_seq_offset,
+            })
+            if not ok:
+                return False
+
+            # Optionally replay a short history of incremental events after FS
+            if history_window_seconds and history_window_seconds > 0:
+                cutoff = fs_event.timestamp
+                window_end = cutoff + float(history_window_seconds)
+                for ev in list(self.event_buffer)[fs_index + 1:]:
+                    if not isinstance(ev, RRWebEvent):
+                        continue
+                    if not isinstance(ev.event, dict) or ev.event.get('type') != 3:
+                        continue
+                    if ev.timestamp is None or ev.timestamp < cutoff or ev.timestamp > window_end:
+                        continue
+                    client_seq = max(0, ev.sequence_id - state['reset_offset']) + client_seq_offset
+                    ok = await self._safe_send_to_client(websocket, {
+                        'type': 'rrweb_event',
+                        'session_id': ev.session_id,
+                        'timestamp': ev.timestamp,
+                        'event': ev.event,
+                        'sequence_id': client_seq,
+                    })
+                    if not ok:
+                        break
+            return True
+        except Exception as e:
+            logger.debug(f"send_last_fullsnapshot_to_client failed: {e}")
+            return False
     
     async def add_client(self, websocket, send_buffered: bool = False) -> bool:
         """Add a new client for event streaming.

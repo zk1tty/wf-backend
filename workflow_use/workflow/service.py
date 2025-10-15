@@ -844,7 +844,7 @@ class Workflow:
 		finally:
 			# Announce run end (best-effort)
 			if self.run_id:
-				await c.run_ended(self.run_id, status=("fail" if run_failed else "success"))
+				await run_events_hub.run_ended(self.run_id, status=("fail" if run_failed else "success"))
 			# Clean-up browser after finishing workflow
 			if close_browser_at_end and self.browser:
 				self.browser.browser_profile.keep_alive = False
