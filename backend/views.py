@@ -196,6 +196,7 @@ class UploadRequest(BaseModel):
 	recording: dict
 	goal: str
 	name: Optional[str] = None
+	transcript: Optional[dict] = None  # Voice transcript data with timestamps
 
 class OwnershipResponse(BaseModel):
 	is_owner: bool
@@ -207,6 +208,7 @@ class SessionUploadRequest(BaseModel):
 	goal: str
 	name: Optional[str] = None
 	session_token: str  # Supabase session access token
+	transcript: Optional[dict] = None  # Voice transcript data with timestamps
 
 # Session-based request models for database operations
 class SessionWorkflowUpdateRequest(BaseModel):

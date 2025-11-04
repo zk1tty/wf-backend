@@ -576,7 +576,8 @@ async def upload_recording_async(
 			recording_data=request.recording,
 			user_goal=request.goal,
 			workflow_name=request.name,
-			owner_id=user_id
+			owner_id=user_id,
+			transcript_data=request.transcript
 		)
 		
 		return WorkflowUploadResponse(
@@ -600,7 +601,8 @@ async def upload_recording_public(request: UploadRequest):
 			recording_data=request.recording,
 			user_goal=request.goal,
 			workflow_name=request.name,
-			owner_id=None  # Public workflow
+			owner_id=None,  # Public workflow
+			transcript_data=request.transcript
 		)
 		
 		return WorkflowUploadResponse(
@@ -632,7 +634,8 @@ async def upload_recording_session(request: SessionUploadRequest):
 			recording_data=request.recording,
 			user_goal=request.goal,
 			workflow_name=request.name,
-			owner_id=user_id
+			owner_id=user_id,
+			transcript_data=request.transcript
 		)
 		
 		return WorkflowUploadResponse(

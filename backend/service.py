@@ -1459,7 +1459,7 @@ def sanitize_content(content: str | None) -> str:
 		return content.encode('utf-8', 'ignore').decode('utf-8')
 
 
-async def build_workflow_from_recording_data(recording_data: dict, user_goal: str, workflow_name: Optional[str] = None):
+async def build_workflow_from_recording_data(recording_data: dict, user_goal: str, workflow_name: Optional[str] = None, transcript_data: Optional[dict] = None):
 	"""Build a workflow from recording JSON data using BuilderService."""
 	try:
 		# Initialize the builder service with the LLM instance
@@ -1474,10 +1474,19 @@ async def build_workflow_from_recording_data(recording_data: dict, user_goal: st
 		from workflow_use.schema.views import WorkflowDefinitionSchema
 		recording_schema = WorkflowDefinitionSchema.model_validate(recording_data)
 		
+		# Enhance user goal with transcript if available
+		enhanced_goal = user_goal
+		if transcript_data and transcript_data.get('entries'):
+			# Extract transcript text for context
+			transcript_text = ' '.join(entry['text'] for entry in transcript_data['entries'] if entry.get('text'))
+			if transcript_text:
+				enhanced_goal = f"{user_goal}\n\n[User voice transcript: {transcript_text}]"
+				logger.info(f"Enhanced goal with transcript context ({len(transcript_data['entries'])} entries)")
+		
 		# Build the workflow using the builder service
 		built_workflow = await builder_service.build_workflow(
 			input_workflow=recording_schema,
-			user_goal=user_goal,
+			user_goal=enhanced_goal,
 			use_screenshots=False,  # Disabled for faster demo processing
 			max_images=0  # No images for faster processing
 		)
@@ -1506,7 +1515,121 @@ async def build_workflow_from_recording_data(recording_data: dict, user_goal: st
 		raise Exception(f"Failed to build workflow: {str(e)}")
 
 
-async def process_workflow_upload_async(job_id: str, recording_data: dict, user_goal: str, workflow_name: Optional[str] = None, owner_id: Optional[str] = None):
+async def save_correlated_recording(
+	recording_data: dict,
+	transcript_data: dict,
+	user_goal: str,
+	workflow_name: Optional[str],
+	owner_id: Optional[str],
+	correlation_stats: dict
+) -> Optional[str]:
+	"""
+	Save correlated recording (rrweb with voiceContext) BEFORE LLM processing.
+	
+	This allows for:
+	- Testing and improving correlation
+	- Re-processing with different LLM settings
+	- Quality analysis
+	
+	Args:
+		recording_data: Recording with voiceContext added to steps
+		transcript_data: Full transcript
+		user_goal: User's goal
+		workflow_name: Name for the recording
+		owner_id: User who owns this recording
+		correlation_stats: Statistics about correlation quality
+	
+	Returns:
+		recording_id: UUID of saved recording, or None if save failed
+	"""
+	try:
+		if not supabase:
+			logger.warning("Database not configured, skipping correlated recording save")
+			return None
+		
+		from datetime import datetime
+		now = datetime.utcnow().isoformat()
+		
+		# Insert correlated recording
+		try:
+			result = supabase.table("workflow_recordings").insert({
+				"owner_id": owner_id,
+				"name": workflow_name or "Unnamed Recording",
+				"goal": user_goal,
+				"recording_data": recording_data,
+				"transcript_data": transcript_data,
+				"correlation_method": "segment-based",
+				"correlation_stats": correlation_stats,
+				"status": "completed",
+				"created_at": now,
+				"updated_at": now
+			}).execute()
+			
+			recording_id = result.data[0]["id"]
+			logger.info(f"💾 Correlated recording saved: {recording_id}")
+			return recording_id
+			
+		except Exception as table_error:
+			error_msg = str(table_error).lower()
+			if "relation \"workflow_recordings\" does not exist" in error_msg:
+				logger.error("❌ workflow_recordings table does not exist!")
+				logger.error("   📋 Required: Run database migration to create the table")
+				logger.error("   📄 Migration script: doc/RECORDING_STORAGE_DESIGN.md")
+				logger.error("   🔧 SQL: CREATE TABLE workflow_recordings (...)")
+			else:
+				logger.error(f"❌ Failed to save correlated recording: {table_error}")
+			return None
+		
+	except Exception as e:
+		logger.error(f"❌ Failed to save correlated recording: {e}")
+		# Don't fail the whole job, just log the error
+		return None
+
+
+async def link_recording_to_workflow(recording_id: str, workflow_id: str):
+	"""Link a correlated recording to its final workflow."""
+	try:
+		if not supabase or not recording_id:
+			return
+		
+		supabase.table("workflow_recordings").update({
+			"workflow_id": workflow_id
+		}).eq("id", recording_id).execute()
+		
+		logger.info(f"🔗 Linked recording {recording_id} to workflow {workflow_id}")
+		
+	except Exception as e:
+		logger.error(f"Failed to link recording to workflow: {e}")
+
+
+async def save_transcript_data(workflow_id: str, transcript_data: dict):
+	"""
+	Save transcript data linked to a workflow.
+	
+	Stores the transcript in the workflows table as a JSONB column.
+	
+	Args:
+		workflow_id: The UUID of the workflow to attach the transcript to
+		transcript_data: Dictionary containing transcript entries with timestamps
+	"""
+	try:
+		if not supabase:
+			logger.warning("Database not configured, skipping transcript save")
+			return
+		
+		# Update the workflow with transcript data
+		supabase.table("workflows").update({
+			"transcript": transcript_data
+		}).eq("id", workflow_id).execute()
+		
+		logger.info(f"✅ Transcript saved successfully for workflow {workflow_id}")
+		
+	except Exception as e:
+		logger.error(f"❌ Failed to save transcript for workflow {workflow_id}: {e}")
+		raise
+
+
+async def process_workflow_upload_async(job_id: str, recording_data: dict, user_goal: str, workflow_name: Optional[str] = None, owner_id: Optional[str] = None, transcript_data: Optional[dict] = None):
 	"""Process workflow upload with improved error handling and granular progress updates."""
 	import asyncio
 	
@@ -1532,10 +1655,64 @@ async def process_workflow_upload_async(job_id: str, recording_data: dict, user_
 	try:
 		# Update job status: Starting conversion
 		workflow_jobs[job_id].status = "processing"
+		workflow_jobs[job_id].progress = 5
+		workflow_jobs[job_id].estimated_remaining_seconds = 28
+		
+		# Step 0: Apply transcript correlation BEFORE LLM (if transcript available)
+		correlated_recording = recording_data.copy()
+		correlation_stats = None
+		recording_id = None
+		
+		if transcript_data:
+			try:
+				logger.info(f"🔗 Correlating transcript with recording for job {job_id} (BEFORE LLM)")
+				from workflow_use.analyzer.transcript_correlator import correlate_transcript_with_workflow
+				
+				# Apply correlation to RAW recording (adds voiceContext to each step)
+				correlated_recording = correlate_transcript_with_workflow(
+					workflow_data=recording_data,
+					transcript_data=transcript_data,
+					use_segments=True  # Use segment-based correlation
+				)
+				
+				# Calculate correlation statistics
+				steps = correlated_recording.get('steps', [])
+				steps_with_voice = sum(1 for s in steps if s.get('voiceContext'))
+				correlation_stats = {
+					'steps_total': len(steps),
+					'steps_with_voice': steps_with_voice,
+					'coverage_percent': (steps_with_voice / len(steps) * 100) if steps else 0,
+					'method': 'segment-based',
+					'transcript_entries': len(transcript_data.get('entries', []))
+				}
+				
+				logger.info(
+					f"✅ Correlation complete: {steps_with_voice}/{len(steps)} steps have voice context "
+					f"({correlation_stats['coverage_percent']:.1f}% coverage)"
+				)
+				
+				# Save correlated recording to database (for testing and analysis)
+				try:
+					recording_id = await save_correlated_recording(
+						recording_data=correlated_recording,
+						transcript_data=transcript_data,
+						user_goal=user_goal,
+						workflow_name=workflow_name,
+						owner_id=owner_id,
+						correlation_stats=correlation_stats
+					)
+				except Exception as save_error:
+					logger.warning(f"⚠️ Failed to save correlated recording: {save_error}")
+				
+			except Exception as correlation_error:
+				# Don't fail the entire job if correlation fails
+				logger.warning(f"⚠️ Pre-LLM correlation failed for job {job_id}: {correlation_error}")
+				# Continue with uncorrelated recording
+		
 		workflow_jobs[job_id].progress = 10
 		workflow_jobs[job_id].estimated_remaining_seconds = 25
 		
-		# Step 1: Convert recording to workflow (this takes time)
+		# Step 1: Convert recording to workflow (using CORRELATED recording)
 		try:
 			# Start gradual progress updates during conversion (10% → 80%)
 			progress_task = asyncio.create_task(
@@ -1543,10 +1720,12 @@ async def process_workflow_upload_async(job_id: str, recording_data: dict, user_
 			)
 			
 			# Run conversion and progress updates concurrently
+			# IMPORTANT: Pass correlated_recording (has voiceContext) to LLM!
 			conversion_task = asyncio.create_task(build_workflow_from_recording_data(
-				recording_data=recording_data,
+				recording_data=correlated_recording,  # ✅ Now includes voiceContext!
 				user_goal=user_goal,
-				workflow_name=workflow_name
+				workflow_name=workflow_name,
+				transcript_data=transcript_data  # Still pass for goal enhancement
 			))
 			
 			# Wait for conversion to complete
@@ -1615,13 +1794,31 @@ async def process_workflow_upload_async(job_id: str, recording_data: dict, user_
 				"updated_at": now
 			}).execute().data[0]
 			
+			workflow_id = row["id"]
+			
+			# Save transcript if provided
+			if transcript_data:
+				try:
+					logger.info(f"Saving transcript for workflow {workflow_id}")
+					await save_transcript_data(workflow_id, transcript_data)
+				except Exception as transcript_error:
+					# Don't fail the entire job if transcript save fails
+					logger.error(f"Failed to save transcript for workflow {workflow_id}: {transcript_error}")
+			
+			# Link correlated recording to final workflow (if recording was saved)
+			if recording_id and workflow_id:
+				try:
+					await link_recording_to_workflow(recording_id, workflow_id)
+				except Exception as link_error:
+					logger.warning(f"Failed to link recording to workflow: {link_error}")
+			
 			# Job completed successfully
 			workflow_jobs[job_id].status = "completed" 
 			workflow_jobs[job_id].progress = 100
-			workflow_jobs[job_id].workflow_id = row["id"]
+			workflow_jobs[job_id].workflow_id = workflow_id
 			workflow_jobs[job_id].estimated_remaining_seconds = 0
 			
-			return row["id"]
+			return workflow_id
 			
 		except Exception as e:
 			# Database save failed
@@ -1640,7 +1837,7 @@ async def process_workflow_upload_async(job_id: str, recording_data: dict, user_
 		return None
 
 
-async def start_workflow_upload_job(recording_data: dict, user_goal: str, workflow_name: Optional[str] = None, owner_id: Optional[str] = None) -> str:
+async def start_workflow_upload_job(recording_data: dict, user_goal: str, workflow_name: Optional[str] = None, owner_id: Optional[str] = None, transcript_data: Optional[dict] = None) -> str:
 	"""Start an async workflow upload job and return job ID."""
 	job_id = str(uuid4())
 	
@@ -1654,7 +1851,7 @@ async def start_workflow_upload_job(recording_data: dict, user_goal: str, workfl
 	
 	# Start background task (fire and forget)
 	import asyncio
-	asyncio.create_task(process_workflow_upload_async(job_id, recording_data, user_goal, workflow_name, owner_id))
+	asyncio.create_task(process_workflow_upload_async(job_id, recording_data, user_goal, workflow_name, owner_id, transcript_data))
 	
 	return job_id
 
