@@ -1,7 +1,7 @@
 WORKFLOW_BUILDER_PROMPT_TEMPLATE = """\
 You are a senior software engineer working with rebrowse backend.
-Your task is to convert a JSON recording of browser events (provided in subsequent messages) into an
-*executable JSON workflow* that the runtime can consume **directly**.
+Your task is to convert a JSON recording of browser events (provided in subsequent messages) into a 
+*executable workflow steps* in JSON format that the runtime can consume **directly**.
 
 Input Steps Format:
 - Each step from the input recording will be provided in a separate message.

@@ -49,6 +49,7 @@ class BuilderService:
 		self.actions_markdown = self._get_available_actions_markdown()
 		logger.info('BuilderService initialized.')
 
+## Note: Available Action for browser-use agnet.
 	def _get_available_actions_markdown(self) -> str:
 		"""Return a markdown list of available actions and their schema."""
 		controller = WorkflowController()
@@ -94,12 +95,76 @@ class BuilderService:
 		"""Repair common issues in LLM-generated workflow data."""
 		logger.debug("Applying workflow data repairs...")
 		
+		# Allowed step types in schema (union discriminator)
+		allowed_types = {
+			'navigation',
+			'click',
+			'input',
+			'select_change',
+			'key_press',
+			'scroll',
+			'extract_page_content',
+			'click_to_copy',
+			'clipboard_copy',
+			'clipboard_paste',
+			'clipboard_capture',
+			'wait',
+			'agent',
+		}
+		# Map some known aliases/unsupported domain-specific actions to supported ones
+		alias_type_map = {
+			'update_cell_contents': 'agent',
+			'update_range_contents': 'agent',
+			'input_selected_cell_text': 'agent',
+			'extract_structured_data': 'extract_page_content',  # Map to valid step type
+			'extract_data': 'extract_page_content',
+			'extract_text': 'extract_page_content',
+			'page_extraction': 'extract_page_content',
+			'navigate': 'navigation',  # Common LLM alias
+			'type': 'input',  # Common LLM alias
+			'press_key': 'key_press',  # Common LLM alias
+		}
+
 		steps = workflow_dict.get('steps', [])
 		repaired_steps = []
 		
 		for i, step in enumerate(steps):
 			step_type = step.get('type')
 			
+			# Convert unknown/unsupported step types into valid types
+			if not step_type or step_type not in allowed_types:
+				mapped_type = alias_type_map.get(step_type)
+				if mapped_type:
+					# Map to a valid type
+					step['type'] = mapped_type
+					step_type = mapped_type
+					logger.info(f"Repaired step {i}: Mapped '{step.get('type', 'unknown')}' to '{mapped_type}'")
+					
+					# Special handling for extract_page_content
+					if mapped_type == 'extract_page_content':
+						# Ensure required fields are present
+						if not step.get('goal'):
+							step['goal'] = step.get('description') or step.get('task') or f"Extract data from page"
+						# Remove any task field since extract_page_content doesn't use it
+						if 'task' in step:
+							del step['task']
+				else:
+					# No mapping found, convert to agentic step
+					description = step.get('description') or f"Converted unknown type '{step_type}' to agentic step"
+					agent_step = {
+						'type': 'agent',
+						'task': step.get('task') or description,
+						'description': description,
+					}
+					# Keep timestamp/tabId if present for traceability
+					if 'timestamp' in step:
+						agent_step['timestamp'] = step['timestamp']
+					if 'tabId' in step:
+						agent_step['tabId'] = step['tabId']
+					logger.info(f"Repaired step {i}: Converted unknown type '{step_type}' to 'agent'")
+					repaired_steps.append(agent_step)
+					continue
+
 			if step_type == 'key_press':
 				# Check if key field is missing
 				if not step.get('key'):
@@ -233,11 +298,15 @@ class BuilderService:
 		goal = goal or 'Automate the recorded browser actions.'  # Default goal if empty
 
 		# Format the main instruction prompt
+		# log out the actions_markdown
+		logger.info(f'Actions markdown:\n{self.actions_markdown}')
+
 		prompt_str = self.prompt_template.format(
 			actions=self.actions_markdown,
 			goal=goal,
 		)
-
+		logger.info(f'Final Prompt:\n{prompt_str}')
+		
 		# Prepare the vision messages list
 		vision_messages: List[Dict[str, Any]] = [{'type': 'text', 'text': prompt_str}]
 
@@ -251,6 +320,7 @@ class BuilderService:
 			screenshot_data = step_dict.pop('screenshot', None)  # Pop potential screenshot
 			step_messages.append({'type': 'text', 'text': json.dumps(step_dict, indent=2)})
 
+			# TODO: Do we have screenshot?
 			# 2. Optional screenshot
 			attach_image = use_screenshots and images_used < max_images
 			step_type = getattr(step, 'type', step_dict.get('type'))
